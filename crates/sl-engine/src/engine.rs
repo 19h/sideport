@@ -4,11 +4,17 @@
 //! returned future only awaits a oneshot, so gpui (or any executor) can drive it.
 
 mod auth;
+mod files;
 mod portal;
+mod provision;
+mod sideload;
+mod state;
 
 use crate::demo::Demo;
 use crate::error::{EngineError, Result};
 use crate::job::{JobContext, JobHandle};
+use crate::secrets::SecretStore;
+use crate::store::Store;
 use crate::types::*;
 use futures::channel::oneshot;
 use parking_lot::{Mutex, RwLock};
@@ -33,6 +39,8 @@ pub struct EngineConfig {
     pub auth_origin: Option<String>,
     /// Override the developer-services origin for controlled service fixtures.
     pub portal_origin: Option<String>,
+    /// Trust anchors and signer names for downloaded profiles (default: Apple Root CA policy).
+    pub profile_trust: Option<sl_codesign::ProfileTrust>,
 }
 
 /// Notifications from the background refresh scheduler.
@@ -50,17 +58,46 @@ struct Inner {
     settings: RwLock<Settings>,
     auth_origin: String,
     portal_origin: String,
+    store: Store,
+    secrets: Box<dyn SecretStore>,
+    profile_trust: sl_codesign::ProfileTrust,
+    /// Serializes signing-key creation within this process; the store serializes processes.
+    key_lock: Mutex<()>,
     accounts: Mutex<BTreeMap<String, LiveAccount>>,
     demo: Option<Demo>,
     next_job: AtomicU64,
-    device_subscribers: Mutex<Vec<async_channel::Sender<Vec<DeviceInfo>>>>,
-    refresh_subscribers: Mutex<Vec<async_channel::Sender<RefreshEvent>>>,
+    /// Owned by the [`Engine`] handles; jobs and background tasks publish through this weak
+    /// reference, so dropping the last handle closes every subscription channel.
+    subscribers: std::sync::Weak<Subscribers>,
+}
+
+#[derive(Debug, Default)]
+struct Subscribers {
+    devices: Mutex<Vec<async_channel::Sender<Vec<DeviceInfo>>>>,
+    refresh: Mutex<Vec<async_channel::Sender<RefreshEvent>>>,
+}
+
+impl Inner {
+    #[allow(dead_code)]
+    fn publish_devices(&self, devices: &[DeviceInfo]) {
+        if let Some(subscribers) = self.subscribers.upgrade() {
+            subscribers.devices.lock().retain(|sender| sender.try_send(devices.to_vec()).is_ok());
+        }
+    }
+
+    #[allow(dead_code)]
+    fn publish_refresh(&self, event: &RefreshEvent) {
+        if let Some(subscribers) = self.subscribers.upgrade() {
+            subscribers.refresh.lock().retain(|sender| sender.try_send(event.clone()).is_ok());
+        }
+    }
 }
 
 #[derive(Debug)]
 struct LiveAccount {
     summary: AccountSummary,
-    session: Arc<sl_apple::auth::AuthSession>,
+    /// `None` when the stored session is missing; jobs must sign in again.
+    session: Option<Arc<sl_apple::auth::AuthSession>>,
 }
 
 #[derive(Debug)]
@@ -81,6 +118,7 @@ impl Drop for RuntimeOwner {
 #[derive(Debug, Clone)]
 pub struct Engine {
     inner: Arc<Inner>,
+    subscribers: Arc<Subscribers>,
 }
 
 impl Engine {
@@ -101,6 +139,14 @@ impl Engine {
         };
         let demo = config.demo.then(Demo::new);
         let settings = crate::settings::load(&data_dir)?;
+        let store = Store::open(&data_dir)?;
+        let secrets = crate::secrets::open(&data_dir, config.file_secrets)?;
+        let accounts =
+            if demo.is_some() { BTreeMap::new() } else { state::restore_accounts(&store, secrets.as_ref())? };
+        let profile_trust = match config.profile_trust {
+            Some(trust) => trust,
+            None => sl_codesign::ProfileTrust::apple().map_err(|error| EngineError::Signing(error.to_string()))?,
+        };
         let auth_origin = config.auth_origin.unwrap_or_else(|| "https://gsa.apple.com".into());
         sl_apple::auth::AuthClient::with_origin(&auth_origin).map_err(|error| EngineError::Auth(error.to_string()))?;
         let portal_origin =
@@ -108,18 +154,24 @@ impl Engine {
         sl_apple::portal::PortalClient::with_origin(&portal_origin)
             .map_err(|error| EngineError::Auth(error.to_string()))?;
 
+        let subscribers = Arc::new(Subscribers::default());
+
         Ok(Self {
+            subscribers: subscribers.clone(),
             inner: Arc::new(Inner {
                 runtime,
                 data_dir,
                 settings: RwLock::new(settings),
                 auth_origin,
                 portal_origin,
-                accounts: Mutex::new(BTreeMap::new()),
+                store,
+                secrets,
+                profile_trust,
+                key_lock: Mutex::new(()),
+                accounts: Mutex::new(accounts),
                 demo,
                 next_job: AtomicU64::new(1),
-                device_subscribers: Mutex::new(Vec::new()),
-                refresh_subscribers: Mutex::new(Vec::new()),
+                subscribers: Arc::downgrade(&subscribers),
             }),
         })
     }
@@ -183,7 +235,7 @@ impl Engine {
             let _ = tx.try_send(d.devices());
         }
 
-        let mut subscribers = self.inner.device_subscribers.lock();
+        let mut subscribers = self.subscribers.devices.lock();
         subscribers.retain(|sender| !sender.is_closed());
         subscribers.push(tx);
 
@@ -237,7 +289,7 @@ impl Engine {
             .values()
             .map(|account| {
                 let mut summary = account.summary.clone();
-                summary.has_session = !account.session.token().is_empty();
+                summary.has_session = account.session.is_some();
 
                 summary
             })
@@ -266,12 +318,27 @@ impl Engine {
         self.run(async move {
             if let Some(demo) = demo {
                 demo.logout(&apple_id);
-            } else {
-                inner.accounts.lock().remove(&apple_id);
+
+                return Ok(());
             }
 
-            Ok(())
+            inner.accounts.lock().remove(&apple_id);
+            state::forget_account(&inner, &apple_id)
         })
+    }
+
+    /// Default location of the recovered Sideloadly `sessions.json`, if the platform has one.
+    pub fn recovered_sessions_path() -> Option<PathBuf> {
+        state::recovered_sessions_path()
+    }
+
+    /// Import GrandSlam sessions from a recovered Sideloadly `sessions.json`.
+    pub fn import_sessions(&self, path: PathBuf) -> Result<SessionImport> {
+        if self.inner.demo.is_some() {
+            return Err(EngineError::Unsupported("the demo backend has no session storage".into()));
+        }
+
+        state::import_recovered_sessions(&self.inner, &path)
     }
 
     pub fn certificates(&self, apple_id: String) -> JobHandle<Vec<CertificateSummary>> {
@@ -306,6 +373,19 @@ impl Engine {
             match demo {
                 Some(demo) => Ok(demo.app_ids(&apple_id)),
                 None => portal::app_ids(inner, context, apple_id).await,
+            }
+        })
+    }
+
+    /// Devices registered with the account's selected team.
+    pub fn registered_devices(&self, apple_id: String) -> JobHandle<Vec<RegisteredDevice>> {
+        let demo = self.inner.demo.clone();
+        let inner = self.inner.clone();
+
+        self.job(move |context| async move {
+            match demo {
+                Some(demo) => Ok(demo.registered_devices()),
+                None => portal::registered_devices(inner, context, apple_id).await,
             }
         })
     }
@@ -346,10 +426,12 @@ impl Engine {
     /// Run a sideload/export job.
     pub fn start(&self, spec: JobSpec) -> JobHandle<JobOutcome> {
         let demo = self.inner.demo.clone();
+        let inner = self.inner.clone();
+
         self.job(move |ctx| async move {
             match demo {
                 Some(d) => d.run_job(ctx, spec).await,
-                None => crate::pipeline::run_export(ctx, spec).await,
+                None => sideload::run(inner, ctx, spec).await,
             }
         })
     }
@@ -358,27 +440,49 @@ impl Engine {
     // Installations
 
     pub fn installations(&self) -> Result<Vec<Installation>> {
-        self.inner.demo.as_ref().map(|d| d.installations()).ok_or_else(not_yet)
+        match &self.inner.demo {
+            Some(demo) => Ok(demo.installations()),
+            None => self.inner.store.installations(),
+        }
     }
 
     pub fn set_auto_refresh(&self, installation_id: i64, enabled: bool) -> Result<()> {
-        match &self.inner.demo {
-            Some(d) => {
-                d.set_auto_refresh(installation_id, enabled);
-                Ok(())
-            }
-            None => Err(not_yet()),
+        if let Some(demo) = &self.inner.demo {
+            demo.set_auto_refresh(installation_id, enabled);
+
+            return Ok(());
         }
+
+        let mut installation = self
+            .inner
+            .store
+            .installation(installation_id)?
+            .ok_or_else(|| EngineError::Storage(format!("installation {installation_id} does not exist")))?;
+
+        installation.auto_refresh = enabled;
+        self.inner.store.update_installation(&installation)
     }
 
+    /// Forget a tracked installation. Its stored IPA copy is deleted once no other installation
+    /// refers to it; the app on the device is not touched.
     pub fn forget_installation(&self, installation_id: i64) -> Result<()> {
-        match &self.inner.demo {
-            Some(d) => {
-                d.forget(installation_id);
-                Ok(())
-            }
-            None => Err(not_yet()),
+        if let Some(demo) = &self.inner.demo {
+            demo.forget(installation_id);
+
+            return Ok(());
         }
+
+        let installation = self.inner.store.installation(installation_id)?;
+
+        if !self.inner.store.delete_installation(installation_id)? {
+            return Err(EngineError::Storage(format!("installation {installation_id} does not exist")));
+        }
+
+        if let Some(installation) = installation {
+            files::release(&self.inner, &installation.spec.source)?;
+        }
+
+        Ok(())
     }
 
     /// Re-run the stored job of an installation now.
@@ -395,7 +499,7 @@ impl Engine {
     /// Background refresh notifications.
     pub fn subscribe_refresh(&self) -> async_channel::Receiver<RefreshEvent> {
         let (tx, rx) = async_channel::unbounded();
-        let mut subscribers = self.inner.refresh_subscribers.lock();
+        let mut subscribers = self.subscribers.refresh.lock();
         subscribers.retain(|sender| !sender.is_closed());
         subscribers.push(tx);
 

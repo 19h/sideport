@@ -18,10 +18,11 @@ remote anisette provider, and a GSA client with trusted-device/SMS verification.
 HTTP fixtures cover the GSA operation sequence and retry behavior. A typed developer portal
 client covers core team, device, app-ID, certificate and profile actions. The non-demo engine
 login job uses remote anisette, attempts team enumeration, and retains its session in memory.
-Account jobs now list certificates and app IDs and handle explicit certificate revocation for a
-selected team.
-Password persistence, account UI/CLI, provisioning, physical-device installation, and the other
-ledger workflows remain open.
+Sessions, remembered passwords and the signing key persist across restarts (keychain on macOS),
+and recovered Sideloadly `sessions.json` GSA sessions can be imported. The engine provisions
+Apple ID exports: team, certificate reuse or creation, App IDs and trust-verified profiles, then
+signs the IPA with the issued identity. Account UI/CLI, physical-device installation, and the
+other ledger workflows remain open.
 Engine/CLI anisette checks use the real transport; see
 [docs/APPLE.md](docs/APPLE.md) for independent vectors and the remaining account workflows.
 

@@ -112,6 +112,10 @@ impl Demo {
         ]
     }
 
+    pub(crate) fn registered_devices(&self) -> Vec<RegisteredDevice> {
+        self.devices().into_iter().map(|device| RegisteredDevice { udid: device.udid, name: device.name }).collect()
+    }
+
     pub(crate) fn accounts(&self) -> Vec<AccountSummary> {
         self.state.lock().accounts.clone()
     }

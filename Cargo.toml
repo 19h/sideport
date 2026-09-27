@@ -27,6 +27,7 @@ sl-bundle = { path = "crates/sl-bundle" }
 sl-apple = { path = "crates/sl-apple" }
 sl-device = { path = "crates/sl-device" }
 sl-engine = { path = "crates/sl-engine" }
+sl-testkit = { path = "crates/sl-testkit" }
 
 # errors / logging
 thiserror = "2"
@@ -56,6 +57,7 @@ memmap2 = "0.9"
 tempfile = "3"
 walkdir = "2"
 dirs = "6"
+gethostname = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }
 parking_lot = "0.12"
 
@@ -94,6 +96,7 @@ rand = "0.8"
 rusqlite = { version = "0.32", features = ["bundled"] }
 
 # macOS
+security-framework = "3"
 objc2 = "0.6"
 objc2-foundation = "0.3"
 

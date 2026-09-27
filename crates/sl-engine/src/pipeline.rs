@@ -2,20 +2,72 @@ use crate::{
     AppOptions, AppSummary, BundleIdPolicy, EngineError, ExtensionInfo, ExtensionRemoval, Fact, InfoValue, JobContext,
     JobOutcome, JobSpec, PromptKind, PromptReply, Result, SigningMode, Stage, Target,
 };
-use plist::Value;
+use plist::{Dictionary, Value};
 use sl_bundle::{
     ArchiveLimits, BundleArchive, Control, Injection, OutputLayout, PackOptions, PatchOptions, ProfileRequirements,
     PropertyEdit, Replacement, SigningRequest,
 };
-use sl_codesign::Signer;
+use sl_codesign::{ProvisioningProfile, Signer, SigningIdentity};
 use std::{
     collections::BTreeMap,
     fs::{self, File},
     io::{Read, Write},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
+/// Entitlement override files are small plists; larger inputs are rejected before parsing.
+const MAX_ENTITLEMENTS_BYTES: u64 = 1024 * 1024;
+
+/// How the prepared bundle is signed.
+#[derive(Debug)]
+pub(crate) enum SigningPlan {
+    Original,
+    Unsigned,
+    AdHoc,
+    Identity(Box<IdentityPlan>),
+}
+
+/// Apple ID provisioning results applied to the prepared bundle.
+#[derive(Debug)]
+pub(crate) struct IdentityPlan {
+    pub identity: Arc<SigningIdentity>,
+    pub profile: ProvisioningProfile,
+    pub extension_profiles: BTreeMap<String, ProvisioningProfile>,
+    /// Final main-app identifier; extensions keep their suffixes.
+    pub bundle_id: String,
+    pub record_original_id: bool,
+    pub device_udid: Option<String>,
+    /// Profile `Platform` value: iOS or tvOS.
+    pub platform: &'static str,
+    /// Parsed user entitlement overrides, merged over each profile's entitlements.
+    pub entitlements: Option<Dictionary>,
+}
+
+impl SigningPlan {
+    fn for_mode(mode: &SigningMode) -> Result<Self> {
+        match mode {
+            SigningMode::Original => Ok(Self::Original),
+            SigningMode::Unsigned => Ok(Self::Unsigned),
+            SigningMode::AdHoc => Ok(Self::AdHoc),
+            SigningMode::AppleId { .. } => {
+                Err(EngineError::Other("Apple ID signing requires provisioning before export".into()))
+            }
+        }
+    }
+}
+
+/// Inspection plus the input's original identifier (`ALTBundleIdentifier`, else the bundle ID).
+pub(crate) struct Inspected {
+    pub summary: AppSummary,
+    pub original_bundle_id: String,
+}
+
 pub(crate) fn inspect(path: PathBuf, context: Option<&JobContext>) -> Result<AppSummary> {
+    Ok(inspect_details(path, context)?.summary)
+}
+
+pub(crate) fn inspect_details(path: PathBuf, context: Option<&JobContext>) -> Result<Inspected> {
     let cancelled = || context.is_some_and(JobContext::is_cancelled);
     let control = Control { is_cancelled: Some(&cancelled), on_progress: None };
     let inspection = sl_bundle::inspect(&path, ArchiveLimits::default(), control).map_err(bundle_error)?;
@@ -48,7 +100,10 @@ pub(crate) fn inspect(path: PathBuf, context: Option<&JobContext>) -> Result<App
         .filter_map(|value| u32::try_from(value).ok())
         .collect();
 
-    Ok(AppSummary {
+    let original_bundle_id =
+        string(info, "ALTBundleIdentifier").filter(|value| !value.is_empty()).unwrap_or_else(|| bundle_id.clone());
+
+    let summary = AppSummary {
         path,
         name,
         bundle_id,
@@ -62,31 +117,52 @@ pub(crate) fn inspect(path: PathBuf, context: Option<&JobContext>) -> Result<App
         encrypted: inspection.encrypted,
         device_family,
         warnings: inspection.warnings,
-    })
+    };
+
+    Ok(Inspected { summary, original_bundle_id })
 }
 
-pub(crate) async fn run_export(context: JobContext, spec: JobSpec) -> Result<JobOutcome> {
-    validate_export(&spec)?;
+/// Inspect on a blocking worker and report inspection warnings and encryption.
+pub(crate) async fn inspect_job(context: &JobContext, spec: &JobSpec) -> Result<Inspected> {
     context.checkpoint()?;
     context.stage(Stage::Preparing);
 
     let inspect_context = context.clone();
     let source = spec.source.clone();
-    let summary = tokio::task::spawn_blocking(move || inspect(source, Some(&inspect_context)))
+    let inspected = tokio::task::spawn_blocking(move || inspect_details(source, Some(&inspect_context)))
         .await
         .map_err(|error| EngineError::Other(format!("inspection worker failed: {error}")))??;
 
-    for warning in &summary.warnings {
+    for warning in &inspected.summary.warnings {
         context.warn(warning.clone());
     }
 
-    if summary.encrypted {
+    if inspected.summary.encrypted {
         context.fact(Fact::EncryptedBinary);
         context.warn("The executable is encrypted; changing its signature does not decrypt it.");
     }
 
-    let path = match &spec.target {
-        Target::ExportIpa { path: Some(path) } => path.clone(),
+    Ok(inspected)
+}
+
+pub(crate) async fn run_export(context: JobContext, spec: JobSpec) -> Result<JobOutcome> {
+    validate_export(&spec)?;
+
+    let plan = SigningPlan::for_mode(&spec.signing)?;
+    let inspected = inspect_job(&context, &spec).await?;
+    let path = output_path(&context, &spec, &inspected.summary).await?;
+
+    context.checkpoint()?;
+
+    tokio::task::spawn_blocking(move || export(context, spec, inspected.summary, path, plan))
+        .await
+        .map_err(|error| EngineError::Other(format!("export worker failed: {error}")))?
+}
+
+/// Resolve the export destination, asking the front end when the job names none.
+pub(crate) async fn output_path(context: &JobContext, spec: &JobSpec, summary: &AppSummary) -> Result<PathBuf> {
+    match &spec.target {
+        Target::ExportIpa { path: Some(path) } => Ok(path.clone()),
         Target::ExportIpa { path: None } => {
             let filename: String = summary
                 .bundle_id
@@ -101,20 +177,31 @@ pub(crate) async fn run_export(context: JobContext, spec: JobSpec) -> Result<Job
                 .collect();
 
             match context.ask(PromptKind::SaveFile { suggested_name: format!("{filename}.ipa") }).await? {
-                PromptReply::Path(path) => path,
-                _ => return Err(EngineError::Other("save-file prompt requires a file path".into())),
+                PromptReply::Path(path) => Ok(path),
+                _ => Err(EngineError::Other("save-file prompt requires a file path".into())),
             }
         }
         Target::Device { .. } => {
-            return Err(EngineError::Unsupported("device installation is not connected to the engine yet".into()));
+            Err(EngineError::Unsupported("device installation is not connected to the engine yet".into()))
         }
-    };
+    }
+}
 
-    context.checkpoint()?;
+/// Reject options that the requested signing mode cannot apply, before any output changes.
+pub(crate) fn validate_options(spec: &JobSpec) -> Result<()> {
+    if spec.options.icon.is_some() && spec.signing != SigningMode::Original {
+        return Err(EngineError::Unsupported("custom icon replacement is not connected to the engine yet".into()));
+    }
 
-    tokio::task::spawn_blocking(move || export(context, spec, summary, path))
-        .await
-        .map_err(|error| EngineError::Other(format!("export worker failed: {error}")))?
+    let identity = matches!(spec.signing, SigningMode::AppleId { .. });
+
+    if spec.options.entitlements.is_some() && !identity && spec.signing != SigningMode::Original {
+        return Err(EngineError::Unsupported(
+            "entitlement overrides require Apple ID signing; ad-hoc and unsigned bundles carry no entitlements".into(),
+        ));
+    }
+
+    Ok(())
 }
 
 fn validate_export(spec: &JobSpec) -> Result<()> {
@@ -122,35 +209,29 @@ fn validate_export(spec: &JobSpec) -> Result<()> {
         return Err(EngineError::Unsupported("device installation is not connected to the engine yet".into()));
     }
 
-    if matches!(spec.signing, SigningMode::AppleId { .. }) {
-        return Err(EngineError::Unsupported(
-            "Apple ID authentication and provisioning are not connected to the engine yet".into(),
-        ));
-    }
-
-    if spec.options.icon.is_some() && spec.signing != SigningMode::Original {
-        return Err(EngineError::Unsupported("custom icon replacement is not connected to the engine yet".into()));
-    }
-
-    if spec.options.entitlements.is_some() && spec.signing != SigningMode::Original {
-        return Err(EngineError::Unsupported(
-            "entitlement overrides require identity signing, which is not connected to the engine yet".into(),
-        ));
-    }
-
-    Ok(())
+    validate_options(spec)
 }
 
-fn export(context: JobContext, spec: JobSpec, summary: AppSummary, path: PathBuf) -> Result<JobOutcome> {
+pub(crate) fn export(
+    context: JobContext,
+    spec: JobSpec,
+    summary: AppSummary,
+    path: PathBuf,
+    plan: SigningPlan,
+) -> Result<JobOutcome> {
     validate_destination(&spec.source, &path)?;
     context.checkpoint()?;
 
     let cancelled = || context.is_cancelled();
     let progress = |progress: sl_bundle::Progress| context.progress(progress.completed, progress.total);
     let control = Control { is_cancelled: Some(&cancelled), on_progress: Some(&progress) };
+    let expires = match &plan {
+        SigningPlan::Identity(identity) => Some(identity.profile.expiration_date),
+        _ => None,
+    };
     let bundle_id;
 
-    if spec.signing == SigningMode::Original && spec.source.is_file() {
+    if matches!(plan, SigningPlan::Original) && spec.source.is_file() {
         bundle_id = summary.bundle_id;
         context.fact(Fact::BundleId(bundle_id.clone()));
         context.info("Exporting the original archive without changing its bytes.");
@@ -160,42 +241,8 @@ fn export(context: JobContext, spec: JobSpec, summary: AppSummary, path: PathBuf
         let mut archive =
             BundleArchive::unpack(&spec.source, ArchiveLimits::default(), control).map_err(bundle_error)?;
 
-        if spec.signing != SigningMode::Original {
-            context.stage(Stage::Patching);
-            let patch = patch_options(&spec.options)?;
-            archive.patch(&patch, control).map_err(bundle_error)?;
-
-            if !spec.options.injections.is_empty() {
-                let injections = spec
-                    .options
-                    .injections
-                    .iter()
-                    .map(|injection| Injection { source: injection.source.clone(), name: injection.name.clone() })
-                    .collect::<Vec<_>>();
-                let report = archive.inject(&injections, control).map_err(bundle_error)?;
-                context.info(format!("Prepared {} injected items.", report.copied.len()));
-            }
-
-            context.stage(Stage::Signing);
-
-            let signer = match spec.signing {
-                SigningMode::AdHoc => Some(Signer::AdHoc),
-                SigningMode::Unsigned => None,
-                _ => return Err(EngineError::Unsupported("signing mode is not connected to this pipeline".into())),
-            };
-            let request = SigningRequest {
-                signer: signer.as_ref(),
-                profile: None,
-                profiles: None,
-                entitlements: None,
-                deep: true,
-                requirements: ProfileRequirements::default(),
-            };
-            let report = archive.sign(request, control).map_err(bundle_error)?;
-
-            for skipped in report.skipped {
-                context.warn(format!("Skipped {}: {}", skipped.path.display(), skipped.reason));
-            }
+        if !matches!(plan, SigningPlan::Original) {
+            prepare(&mut archive, &context, &spec.options, &plan, control)?;
         }
 
         bundle_id = archive.bundle().map_err(bundle_error)?.identifier().map_err(bundle_error)?.to_owned();
@@ -207,7 +254,158 @@ fn export(context: JobContext, spec: JobSpec, summary: AppSummary, path: PathBuf
     context.stage(Stage::Done);
     context.info(format!("Exported {}", path.display()));
 
-    Ok(JobOutcome { bundle_id, exported_to: Some(path), expires: None, installation_id: None })
+    Ok(JobOutcome { bundle_id, exported_to: Some(path), expires, installation_id: None })
+}
+
+/// Patch, inject and sign an unpacked archive according to `plan`.
+pub(crate) fn prepare(
+    archive: &mut BundleArchive,
+    context: &JobContext,
+    options: &AppOptions,
+    plan: &SigningPlan,
+    control: Control<'_>,
+) -> Result<()> {
+    context.stage(Stage::Patching);
+
+    let mut patch = patch_options(options)?;
+
+    if let SigningPlan::Identity(identity) = plan {
+        let current = archive.bundle().map_err(bundle_error)?.identifier().map_err(bundle_error)?.to_owned();
+
+        if identity.bundle_id != current {
+            patch
+                .info
+                .insert("CFBundleIdentifier".into(), PropertyEdit::Set(Value::String(identity.bundle_id.clone())));
+        }
+
+        if identity.record_original_id {
+            patch.info.insert("ALTBundleIdentifier".into(), PropertyEdit::Set(Value::String(current)));
+        }
+    }
+
+    archive.patch(&patch, control).map_err(bundle_error)?;
+
+    if !options.injections.is_empty() {
+        let injections = options
+            .injections
+            .iter()
+            .map(|injection| Injection { source: injection.source.clone(), name: injection.name.clone() })
+            .collect::<Vec<_>>();
+        let report = archive.inject(&injections, control).map_err(bundle_error)?;
+        context.info(format!("Prepared {} injected items.", report.copied.len()));
+    }
+
+    context.stage(Stage::Signing);
+
+    let identity_signer;
+    let signer = match plan {
+        SigningPlan::AdHoc => Some(&Signer::AdHoc),
+        SigningPlan::Unsigned => None,
+        SigningPlan::Identity(identity) => {
+            identity_signer = Signer::Identity(identity.identity.clone());
+
+            Some(&identity_signer)
+        }
+        SigningPlan::Original => return Ok(()),
+    };
+
+    let request = match plan {
+        SigningPlan::Identity(identity) => {
+            if let Some(overrides) = &identity.entitlements {
+                for warning in entitlement_warnings(&identity.profile, overrides) {
+                    context.warn(warning);
+                }
+            }
+
+            SigningRequest {
+                signer,
+                profile: Some(&identity.profile),
+                profiles: Some(&identity.extension_profiles),
+                entitlements: identity.entitlements.as_ref(),
+                deep: true,
+                requirements: ProfileRequirements {
+                    device_udid: identity.device_udid.as_deref(),
+                    platform: Some(identity.platform),
+                    trust: None,
+                    now: None,
+                },
+            }
+        }
+
+        _ => SigningRequest {
+            signer,
+            profile: None,
+            profiles: None,
+            entitlements: None,
+            deep: true,
+            requirements: ProfileRequirements::default(),
+        },
+    };
+
+    let report = archive.sign(request, control).map_err(bundle_error)?;
+
+    for skipped in report.skipped {
+        context.warn(format!("Skipped {}: {}", skipped.path.display(), skipped.reason));
+    }
+
+    Ok(())
+}
+
+/// Load a user entitlement override plist (recovered "alternate entitlements", merged with
+/// `dict.update` over the profile's entitlements).
+pub(crate) fn load_entitlements(path: &Path) -> Result<Dictionary> {
+    let file = File::open(path).map_err(storage_error)?;
+    let mut bytes = Vec::new();
+
+    file.take(MAX_ENTITLEMENTS_BYTES + 1).read_to_end(&mut bytes).map_err(storage_error)?;
+
+    if bytes.len() as u64 > MAX_ENTITLEMENTS_BYTES {
+        return Err(EngineError::InvalidApp("entitlement override file exceeds 1 MiB".into()));
+    }
+
+    sl_bundle::parse_dictionary(&bytes).map_err(bundle_error)
+}
+
+/// Overrides the profile does not grant are signed as requested; the device decides whether to
+/// accept them. A value is considered granted when it equals the profile's value, or when the
+/// profile grants a wildcard (`*` or a `PREFIX.*` string) for that key.
+pub(crate) fn entitlement_warnings(profile: &ProvisioningProfile, overrides: &Dictionary) -> Vec<String> {
+    let mut warnings = Vec::new();
+
+    for (key, value) in overrides {
+        let granted = match profile.entitlements.get(key) {
+            None => false,
+            Some(granted) => granted == value || wildcard_grant(granted, value),
+        };
+
+        if !granted {
+            warnings
+                .push(format!("Entitlement {key} is not granted by the provisioning profile; installation can fail."));
+        }
+    }
+
+    warnings
+}
+
+fn wildcard_grant(granted: &Value, requested: &Value) -> bool {
+    let matches = |pattern: &str, value: &str| match pattern.strip_suffix('*') {
+        Some(stem) => value.starts_with(stem),
+        None => pattern == value,
+    };
+
+    let patterns: Vec<&str> = match granted {
+        Value::String(pattern) => vec![pattern.as_str()],
+        Value::Array(patterns) => patterns.iter().filter_map(Value::as_string).collect(),
+        _ => return false,
+    };
+
+    let values: Vec<&str> = match requested {
+        Value::String(value) => vec![value.as_str()],
+        Value::Array(values) => values.iter().filter_map(Value::as_string).collect(),
+        _ => return false,
+    };
+
+    !values.is_empty() && values.iter().all(|value| patterns.iter().any(|pattern| matches(pattern, value)))
 }
 
 fn patch_options(options: &AppOptions) -> Result<PatchOptions> {
@@ -351,11 +549,57 @@ fn storage_error(error: std::io::Error) -> EngineError {
     EngineError::Storage(error.to_string())
 }
 
-fn bundle_error(error: sl_bundle::Error) -> EngineError {
+pub(crate) fn bundle_error(error: sl_bundle::Error) -> EngineError {
     match error {
         sl_bundle::Error::Cancelled => EngineError::Cancelled,
         sl_bundle::Error::Io { .. } => EngineError::Storage(error.to_string()),
         sl_bundle::Error::Codesign(_) | sl_bundle::Error::Profile { .. } => EngineError::Signing(error.to_string()),
         _ => EngineError::InvalidApp(error.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn profile(entitlements: Dictionary) -> ProvisioningProfile {
+        ProvisioningProfile {
+            raw: Vec::new(),
+            name: "Fixture".into(),
+            uuid: "UUID".into(),
+            team_identifiers: vec!["TEAM123456".into()],
+            application_identifier_prefixes: vec!["TEAM123456".into()],
+            app_id_name: None,
+            entitlements,
+            creation_date: "2026-01-01T00:00:00Z".parse().expect("date"),
+            expiration_date: "2026-01-08T00:00:00Z".parse().expect("date"),
+            time_to_live_days: Some(7),
+            local_provision: true,
+            platforms: Vec::new(),
+            provisions_all_devices: false,
+            provisioned_devices: Vec::new(),
+            developer_certificates: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn entitlement_overrides_are_checked_against_profile_grants() {
+        let mut granted = Dictionary::new();
+        granted.insert("get-task-allow".into(), true.into());
+        granted.insert("keychain-access-groups".into(), Value::Array(vec!["TEAM123456.*".into()]));
+        granted.insert("com.apple.developer.team-identifier".into(), "TEAM123456".into());
+
+        let mut overrides = Dictionary::new();
+        overrides.insert("get-task-allow".into(), true.into());
+        overrides.insert("keychain-access-groups".into(), Value::Array(vec!["TEAM123456.com.example.shared".into()]));
+        assert!(entitlement_warnings(&profile(granted.clone()), &overrides).is_empty());
+
+        overrides.insert("com.apple.developer.team-identifier".into(), "OTHERTEAM".into());
+        overrides.insert("com.apple.developer.healthkit".into(), true.into());
+        overrides.insert("keychain-access-groups".into(), Value::Array(vec!["OTHER.group".into()]));
+
+        let warnings = entitlement_warnings(&profile(granted), &overrides);
+        assert_eq!(warnings.len(), 3, "{warnings:?}");
+        assert!(warnings.iter().any(|warning| warning.contains("healthkit")));
     }
 }

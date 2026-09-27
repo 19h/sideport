@@ -44,7 +44,17 @@ consumer can still accumulate logs and rate-limited progress over a long job.
 
 Settings load/save uses bounded JSON and an atomic same-directory temporary file. Memory is
 updated only after the disk write commits. Invalid settings are reported instead of overwritten.
-Installation/account/session persistence and the refresh scheduler are still pending.
+Accounts, teams, certificates, installations, the refresh queue and stored-file records live in
+`state.sqlite3` (schema version 1; a newer schema is refused). Secrets live in the keychain or a
+0600 file (docs/APPLE.md). Installations can be listed, toggled and forgotten; forgetting deletes
+an unreferenced stored IPA copy. The refresh scheduler and device installation are pending.
+
+Apple ID export (`SigningMode::AppleId` with `Target::ExportIpa`) inspects the input, runs the
+provisioning policy in docs/APPLE.md, asks for the output path, then patches, injects and signs
+with the issued identity and downloaded profiles on a blocking worker. The outcome carries the
+profile expiry. User entitlement overrides are merged over each profile's entitlements, as the
+recovered alternate-entitlements option does; keys whose values the profile does not grant (by
+equality or a trailing-asterisk grant) produce warnings rather than silent drops.
 
 ## Algorithm and complexity
 
@@ -69,8 +79,8 @@ These are algorithmic bounds; measured throughput, peak RSS, and cancellation la
 identifier/name/version/OS changes, extension policy, file sharing, device restriction removal,
 local injection, replacement/deletion, progress, cancellation, and save-path prompts. JSON
 results go to stdout; job diagnostics go to stderr. Inspection JSON omits icon pixel bytes.
-Unattended exports require an output path. Device, Apple ID, custom icon, and identity-only
-entitlement operations return explicit unsupported errors before output mutation.
+Unattended exports require an output path. Device targets, custom icons, and entitlement
+overrides without Apple ID signing return explicit unsupported errors before output mutation.
 
 Bundle identifiers and primary icon declarations follow
 [Apple's Core Foundation Keys reference](https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html).
@@ -87,8 +97,8 @@ UI.md records its implementation, primary sources, and rendered evidence.
 
 ## Verification and assumptions
 
-The five-crate suite currently has 100 tests: sl-bundle 27, sl-codesign 39, sl-macho 10,
-sl-engine 19, and sl-cli 5. The full workspace also runs sl-apple 33 and sl-app 8, for 141. The engine authentication/portal and CLI anisette tests are
+The five-crate suite currently has 118 tests: sl-bundle 27, sl-codesign 39, sl-macho 10,
+sl-engine 37, and sl-cli 5. The full workspace also runs sl-apple 33 and sl-app 8, for 159. The engine authentication/portal and CLI anisette tests are
 described in APPLE.md. Native generated universal code is exported through the real engine,
 accepted by Apple's codesign with strict/deep/all-architecture verification, and executes.
 Info.plist tampering is rejected. CLI subprocess tests cover metadata/export JSON and SIGINT
@@ -108,6 +118,9 @@ prompt cancellation, subscriber closure, and concurrent progress reduction.
   cancellation. Once the atomic commit succeeds, the job returns success; an interrupt racing after
   that commit does not roll the output back. Resource sealing and single signing calls still need
   finer-grained cancellation checkpoints and latency measurements.
+- A6: SQLite WAL locking serializes processes sharing a data directory. Dependent results:
+  one machine UUID and signing key per data directory, consistent installation rows. Probe:
+  two-connection metadata agreement and exclusive key creation; multi-process crash tests remain.
 - A4: One Engine process writes a given settings file. Dependent results: serialized settings updates.
   Probes: restart, invalid JSON, oversized writes, memory/disk preservation. Cross-process locking and
   settings conflict resolution remain pending.

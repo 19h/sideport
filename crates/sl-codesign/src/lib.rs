@@ -24,7 +24,10 @@ pub mod signature;
 pub mod trust;
 
 pub use error::{Error, Result};
-pub use identity::{SigningIdentity, build_csr_pem, generate_signing_key};
+pub use identity::{
+    SigningIdentity, build_csr_pem, certificate_matches_key, decode_signing_key, encode_signing_key,
+    generate_signing_key,
+};
 pub use profile::{ProfileTarget, ProvisioningProfile};
 pub use sl_macho as macho;
 pub use trust::ProfileTrust;

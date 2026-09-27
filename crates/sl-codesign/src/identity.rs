@@ -4,7 +4,11 @@ use crate::{Error, Result};
 use const_oid::ObjectIdentifier;
 use der::asn1::{Any, PrintableStringRef, SetOfVec, Utf8StringRef};
 use der::{Decode, DecodePem, Encode, EncodePem, Tagged};
-use rsa::{RsaPrivateKey, RsaPublicKey, pkcs1::DecodeRsaPrivateKey, pkcs8::DecodePrivateKey};
+use rsa::{
+    RsaPrivateKey, RsaPublicKey,
+    pkcs1::DecodeRsaPrivateKey,
+    pkcs8::{DecodePrivateKey, EncodePrivateKey},
+};
 use sha2::Sha256;
 use spki::DecodePublicKey;
 use x509_cert::builder::{Builder, RequestBuilder};
@@ -124,6 +128,34 @@ pub fn certificate_common_name(certificate_der: &[u8]) -> Result<String> {
     let certificate = Certificate::from_der(certificate_der).map_err(cert_error)?;
 
     subject_string(&certificate, COMMON_NAME)
+}
+
+/// Whether a DER certificate's subject public key is `key`'s public key. The recovered client
+/// compares RSA moduli; this compares the complete RSA public key (modulus and exponent).
+pub fn certificate_matches_key(certificate_der: &[u8], key: &RsaPrivateKey) -> Result<bool> {
+    let certificate = Certificate::from_der(certificate_der).map_err(cert_error)?;
+    let public_key_der = certificate.tbs_certificate.subject_public_key_info.to_der().map_err(cert_error)?;
+
+    let Ok(public_key) = RsaPublicKey::from_public_key_der(&public_key_der) else {
+        return Ok(false);
+    };
+
+    Ok(public_key == key.to_public_key())
+}
+
+/// PKCS#8 DER encoding of a signing key, for secret storage.
+pub fn encode_signing_key(key: &RsaPrivateKey) -> Result<zeroize::Zeroizing<Vec<u8>>> {
+    let document = key.to_pkcs8_der().map_err(|error| Error::Key(error.to_string()))?;
+
+    Ok(zeroize::Zeroizing::new(document.as_bytes().to_vec()))
+}
+
+/// Decode and validate a PKCS#8 DER signing key.
+pub fn decode_signing_key(der: &[u8]) -> Result<RsaPrivateKey> {
+    let key = RsaPrivateKey::from_pkcs8_der(der).map_err(|error| Error::Key(error.to_string()))?;
+    key.validate().map_err(|error| Error::Key(error.to_string()))?;
+
+    Ok(key)
 }
 
 /// Generate a fresh RSA-2048 (e = 65537) signing key.

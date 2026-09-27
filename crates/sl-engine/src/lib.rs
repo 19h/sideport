@@ -8,7 +8,9 @@ mod engine;
 pub mod error;
 pub mod job;
 mod pipeline;
+mod secrets;
 mod settings;
+mod store;
 pub mod types;
 
 pub use engine::{Engine, EngineConfig, RefreshEvent};

@@ -26,9 +26,20 @@ parking_lot.workspace = true
 zeroize.workspace = true
 dirs.workspace = true
 tempfile.workspace = true
+rusqlite.workspace = true
+rsa.workspace = true
+sha2.workspace = true
+base64.workspace = true
+hex.workspace = true
+gethostname.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework.workspace = true
 
 [dev-dependencies]
 sl-macho.workspace = true
+sl-testkit.workspace = true
+uuid.workspace = true
 wiremock.workspace = true
 
 [lints]

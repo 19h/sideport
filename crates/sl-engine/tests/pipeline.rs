@@ -229,7 +229,7 @@ fn dropping_a_job_handle_cancels_a_pending_prompt_and_closes_its_events() {
 }
 
 #[test]
-fn unimplemented_backends_and_identity_only_edits_fail_before_output_mutation() {
+fn unavailable_backends_and_identity_only_edits_fail_before_output_mutation() {
     let temporary = tempfile::tempdir().expect("tempdir");
     let root = temporary.path().join("Test.app");
     common::synthetic_bundle(&root, "com.example.test", "Test", "APPL");
@@ -246,10 +246,17 @@ fn unimplemented_backends_and_identity_only_edits_fail_before_output_mutation() 
     let mut entitlements = base;
     entitlements.options.entitlements = Some("entitlements.plist".into());
 
-    for job in [apple, device, icon, entitlements] {
+    for job in [device, icon, entitlements] {
         assert!(matches!(block_on(engine.start(job).result()), Err(EngineError::Unsupported(_))));
         assert_eq!(fs::read(&output).expect("output"), b"original output");
     }
+
+    let signed_out = block_on(engine.start(apple).result());
+    assert!(
+        matches!(&signed_out, Err(EngineError::Auth(message)) if message.contains("not signed in")),
+        "{signed_out:?}"
+    );
+    assert_eq!(fs::read(&output).expect("output"), b"original output");
 }
 
 #[test]

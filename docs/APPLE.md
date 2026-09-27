@@ -14,19 +14,20 @@ Live Apple authentication and the current availability of the recovered services
 | Negotiation proof, session-data CBC and app-token GCM | HMAC verification precedes CBC; strict PKCS#7; authenticated `XYZ` token envelope; independent CBC/GCM vectors and complete mock GSA exchanges | Token persistence and live service verification |
 | Alternate anisette retry on -36607 | Complete-operation mismatch switches providers once and restarts the exchange; mock server verifies selection and bound; engine settings accept an alternate remote provider | UI controls and live verification |
 | Trusted-device/SMS 2FA, repair/security-upgrade handling | Client prompts through `FactorDelegate`; trusted-device/SMS transport, code validation, bounded retry and one login restart are exercised against a mock server; repair/upgrade return typed errors; engine prompt bridge | Live parity for uncertain recovered branches, desktop account controls and account verification |
-| Legacy IDMS, session migration/persistence | Engine holds successful GSA sessions in memory; legacy IDMS and session migration are not implemented | Legacy client, keychain/storage, portal validity and migration implementation |
-| Portal teams/devices/certificates/app IDs/profiles and free/paid/tvOS policy | Typed QH65B2 client for listing/creating devices and app IDs, listing/submitting/revoking development certificates, and downloading profiles; mock-server paths, headers, schema, tvOS and limits; engine enumerates teams, lists certificates and app IDs, and handles explicit certificate revocation | Live portal compatibility, certificate/profile/device provisioning policy, remaining actions and UI integration |
-| Provisioning profile field validation and CMS trust | `ProvisioningProfile::validate_for` checks decoded dates, team, prefix, App ID, platform, certificate and device; `verify_trust` checks the CMS signature, chain and signer policy against configured anchors; bundle signing preflights every embedded profile before mutation | Engine Apple ID integration, portal-downloaded profile fixtures and physical-device acceptance |
+| Legacy IDMS, session migration/persistence | GSA sessions, remembered passwords and the signing key persist in the macOS keychain (or a 0600 file); accounts, teams and certificates in SQLite; restart restores sessions; recovered `sessions.json` GSA entries import; code 1100 renews a session once | Legacy IDMS client; live session-lifetime verification |
+| Portal teams/devices/certificates/app IDs/profiles and free/paid/tvOS policy | Typed QH65B2 client; engine provisioning: device registration, certificate reuse by public key, CSR with machine UUID/hostname, confirmed 7460 revocation of the oldest certificate, App ID reuse/creation with recovered name sanitizing, free quota, profile download with trust verification, recovered bundle-ID mangling, tvOS selection and optional per-extension App IDs; stateful fake-portal fixtures | Live portal compatibility; device-target integration; UI/CLI controls |
+| Provisioning profile field validation and CMS trust | `ProvisioningProfile::validate_for` checks decoded dates, team, prefix, App ID, platform, certificate and device; `verify_trust` checks the CMS signature, chain and signer policy against configured anchors; bundle signing preflights every embedded profile before mutation; the engine verifies every downloaded profile | Physical-device acceptance |
 | Store/FairPlay/kbsync and private services | Not implemented | Client implementations, controlled fixtures and authorized live verification |
 
 `AuthClient::login` accepts remote anisette providers and a factor delegate. Its HTTP fixtures
 exercise request fields, cookies, proofs, factor paths and failure transitions; they do not
-establish acceptance by Apple's current servers. The non-demo `Engine::login` job now maps
-password/second-factor prompts into this client and holds completed sessions in memory. It
+establish acceptance by Apple's current servers. The non-demo `Engine::login` job maps
+password/second-factor prompts into this client and persists the completed session. It
 requires remote anisette configuration, attempts portal team enumeration after GSA, and leaves
-teams empty with a warning if that call fails. It rejects password-remember requests until
-secure storage is implemented. `Engine::test_anisette` runs the real provider on the engine's
-Tokio runtime.
+teams empty with a warning if that call fails. With `remember`, the password is stored as a
+secret; a login without a supplied password uses it, and a remembered password rejected with
+-22406 is forgotten before the user is asked once. `Engine::test_anisette` runs the real provider
+on the engine's Tokio runtime.
 `sideport anisette --remote URL [--json]` reports its machine description. Neither interface
 prints the OTP headers. Desktop and CLI account controls remain to be integrated.
 
@@ -67,8 +68,9 @@ anisette headers and mirrors `X-Apple-Locale` to `X-Apple-I-Locale`. A POST to
 `/services/QH65B2/{action}.action?clientId=XABBG36SBA` carries an XML plist with `clientId`,
 `protocolVersion`, a UUID request ID and `userLocale`. System actions add `teamId` and
 `DTDK_Platform`, use the `ios/` path prefix even for tvOS, and add `subPlatform=tvOS` for tvOS.
-The client reads `resultCode` before parsing action-specific fields and reports only the code
-for service failures. It does not echo server response bodies or credentials.
+`csrContent` carries the PEM request text with its line breaks; the client checks its PEM
+framing, a 64 KiB bound and the absence of NUL. The client reads `resultCode` before parsing
+action-specific fields and reports only the code for service failures. It does not echo server response bodies or credentials.
 
 Typed responses validate team, device, app-ID and certificate fields. The engine classifies a
 team with `type=Company/Organization` as organization; otherwise one membership whose name
@@ -82,6 +84,44 @@ fallback. `is_ours` remains false until signing-key persistence and public-key m
 Explicit revocation first checks that the serial occurs in the selected team's certificate list.
 No device or app-ID creation occurs automatically. A portal failure after GSA does not discard
 the authenticated in-memory token, so account state and team state remain distinguishable.
+
+## Account state and provisioning policy
+
+Durable state follows the recovered layout (`sessions.json`, `key.pem`, `machine_id.txt`,
+`cert-<apple id>.pem`, `installations.db`) with two changes: secrets are kept in the macOS login
+keychain, under a service name derived from the data directory, unless `file_secrets` selects a
+0600 `secrets.json`; the remaining records are in `<data dir>/state.sqlite3` (WAL, 10 s busy
+timeout). Secret entries are `session/<apple id>` (DSID, token, alternate-provider flag),
+`password/<apple id>` and `signing-key` (PKCS#8 RSA-2048). The machine UUID is inserted once in
+a database transaction so concurrent processes agree; key creation holds the database write lock.
+An undecodable key is kept as `signing-key.bad` and replaced, as the recovered client renames
+`key.pem`. A certificate is ours when its complete RSA public key equals the stored key's; the
+recovered client compares moduli.
+
+`Engine::import_sessions` reads the recovered `sessions.json` (bounded to 1 MiB): `<apple id>:a`
+entries of `_type` `GsaAuthenticator` with `dsid` (string or number), `gs_token` and
+`using_alt_anisette`. Legacy `:i` IDMS entries, pointer keys and malformed entries are reported as
+skipped; existing Sideport sessions are kept. Portal result 1100 renews the session once with the
+remembered password or a prompt and repeats the request; 4550 reports the license-agreement URL.
+
+Apple ID signing follows the recovered `Impactor.run`: select the team; compute the bundle ID;
+register the target device when it is absent after `_format_udid` normalization (named
+`device-<udid>` when unnamed); reuse a listed certificate for the stored key or submit a CSR
+(`C=US, O=Sideport, CN=Sideport`, SHA-256) with the machine UUID and host name; list App IDs and
+report the free quota (`10 − count`, earliest expiry); reuse or add the App ID with the
+recovered ASCII name sanitizing; download, decode and trust-verify the profile; report TTL and
+`LocalProvision`. Result 7460 prompts before revoking the certificate with the earliest expiry,
+then retries. The loop ends when no certificate remains to revoke.
+
+Deliberate differences: the recovered client revokes the first certificate without asking and
+asks only before a second; Sideport asks before every revocation, so an unattended job fails
+instead of revoking. The recovered client registers `<id>.<TEAMID>` for every team and
+unmangles for paid teams after downloading, which leaves a profile for another identifier;
+Sideport registers the original identifier for non-free teams. The CSR subject names Sideport
+instead of Sideloadly. Extensions inherit the main profile's entitlements as recovered unless
+`provision_extensions` requests one App ID and profile per extension (one free-team App ID each).
+The `Auto` policy appends `.<TEAMID>` for free teams when the device runs iOS 13.3.1 or later, or
+its version is unknown, matching the recovered mangle decision.
 
 ## Provisioning profile contract
 
@@ -209,6 +249,20 @@ mapping, absent failed-account state, explicit refusal of password persistence, 
 portal views, team choice, revocation serial checks and logout during a pending prompt. The CLI test
 invokes the actual executable against the controlled HTTP server.
 
+Engine provisioning tests run the real engine against a stateful fake portal that issues
+certificates for submitted CSRs, enforces a certificate limit, injects code 1100 and returns
+CMS-signed profiles. They cover recovered-session import, first provisioning (seven-request
+sequence, CSR machine fields, App ID name), mangled main and extension identifiers, the embedded
+trust-verified profile, entitlements and signer certificate in each signature, `is_ours`,
+restart reuse (three requests, no CSR or App ID), declined and confirmed revocation, paid-team
+identifiers, custom identifiers with per-extension profiles, session renewal prompting, and
+refusal of a profile outside the configured trust. On macOS, codesign decodes identifier, team,
+entitlements and the Info.plist slot of such an export and stops only at `CSSMERR_TP_NOT_TRUSTED`
+for the fixture authority; OpenSSL verifies the CMS over the CodeDirectory and rejects a changed
+CodeDirectory. State tests cover restart restore, missing sessions, key corruption, machine-ID
+stability, import edge cases and logout. The first end-to-end run found that the portal client
+rejected every multi-line PEM CSR; the client and its fixture were corrected.
+
 Fifteen profile-field tests cover validity boundaries, listed and absent prefixes, exact and
 wildcard App IDs, malformed application identifiers, team entitlements, certificate bytes,
 platforms, UDID case/hyphen variants and `ProvisionsAllDevices`. Six CMS trust tests generate a
@@ -323,14 +377,25 @@ Primary sources:
   required. Case-sensitive bundle-ID matching and the undotted trailing-asterisk rule are unverified
   against a device.
 
+- A16: The login keychain (or a 0600 file where selected) is an acceptable secret store and a
+  restored GSA token remains usable until the service reports 1100. Dependent result: unattended
+  portal access after restart. Probe: restart, corruption, missing-secret and 1100 fixtures;
+  authorized live session-lifetime checks. Live token lifetime is unknown.
+- A17: Result 7460 means the development-certificate limit, and revoking the earliest-expiring
+  certificate frees a slot. Dependent result: certificate creation on full teams. Probe: fake
+  portal limit fixtures; authorized live comparison. Revocation affects other tools using it.
+- A18: Profiles downloaded from the portal chain to Apple Root CA under the Apple signer policy.
+  Dependent result: provisioning refuses altered or foreign profiles. Probe: fixture-anchor
+  engine tests and refusal under the Apple policy; live downloads remain unverified.
+
 ## Bounded observations and quality gates
 
 - High impact: the missing colon or padded shared secret changes authentication outputs;
   independent vectors exercise both cases.
 - High impact: the client now bounds 2FA restart and anisette fallback in mock exchanges;
   portal session expiry and durable account state remain unimplemented.
-- High impact: an engine session is memory-only and cannot support unattended refresh;
-  password-remember requests fail explicitly until keychain storage exists.
+- High impact: remembered passwords and persisted sessions enable unattended portal access, but
+  a second factor cannot be answered unattended; such refreshes fail with a sign-in request.
 - High impact: a portal error after GSA leaves a session with no enumerated teams. The engine
   reports the portal failure separately and retries enumeration for account jobs; signing must
   require a selected, verified team.
@@ -339,8 +404,8 @@ Primary sources:
   can complete if logout races with dispatch.
 - High impact: decoded-field checks and trust checks are separate. Signing verifies trust only
   when `ProfileRequirements::trust` is set; neither check proves device installation.
-- Medium impact: certificate ownership is unknown without a retained private key. The current
-  list deliberately reports `is_ours=false` for every record.
+- Medium impact: certificate ownership depends on the stored key; deleting the keychain item or
+  data directory makes previously issued certificates foreign and consumes another slot.
 - Medium impact: QH65B2 may be unavailable or changed; fixed-action mock fixtures establish
   client encoding and parsing only, while live service compatibility is unknown.
 - High impact: two recovered second-factor branches are ambiguous. Mock fixtures establish the

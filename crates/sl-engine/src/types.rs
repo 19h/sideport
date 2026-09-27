@@ -90,6 +90,23 @@ pub struct CertificateSummary {
     pub is_ours: bool,
 }
 
+/// Result of importing sessions from the recovered client's `sessions.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct SessionImport {
+    /// Apple IDs whose sessions were imported.
+    pub imported: Vec<String>,
+    /// Entries left out, with the reason.
+    pub skipped: Vec<(String, String)>,
+}
+
+/// A device registered with the selected developer team.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegisteredDevice {
+    /// Portal `deviceNumber` (the device UDID as registered).
+    pub udid: String,
+    pub name: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppIdSummary {
     pub app_id_id: String,
@@ -238,6 +255,10 @@ pub struct AppOptions {
     pub upload_chunk_mib: Option<u32>,
     /// Provision Apple TV targets for tvOS (`subPlatform=tvOS`).
     pub tvos_for_apple_tv: bool,
+    /// Register an App ID and profile for each extension instead of the recovered single
+    /// main-app profile (uses one free-team App ID per extension).
+    #[serde(default)]
+    pub provision_extensions: bool,
     /// Remember this job for automatic refresh (Apple ID + device targets only).
     pub track_for_refresh: bool,
 }
@@ -262,6 +283,7 @@ impl Default for AppOptions {
             stream_upload: false,
             upload_chunk_mib: None,
             tvos_for_apple_tv: false,
+            provision_extensions: false,
             track_for_refresh: false,
         }
     }

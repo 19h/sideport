@@ -12,6 +12,8 @@ const USERNAME: &str = "fixture@example.test";
 const DSID: &str = "123456789";
 const TOKEN: &str = "private-fixture-token";
 const TEAM: &str = "TEAM123456";
+/// Framing matches a PEM CSR; the multi-line body must reach the service unchanged.
+const FIXTURE_CSR: &str = "-----BEGIN CERTIFICATE REQUEST-----\nZml4dHVyZQ==\n-----END CERTIFICATE REQUEST-----\n";
 
 #[derive(Debug)]
 struct FixedAnisette;
@@ -170,7 +172,7 @@ async fn system_actions_preserve_paths_platform_fields_and_typed_responses() {
     let certificates = portal.list_certificates(TEAM, Platform::Ios, access).await.expect("certificates");
     let machine_id = Uuid::parse_str("d584b0a7-2613-4806-b631-c3ab34f8b14a").expect("machine ID");
     let serial = portal
-        .submit_development_csr(TEAM, Platform::Ios, "fixture CSR", machine_id, "Fixture Mac", access)
+        .submit_development_csr(TEAM, Platform::Ios, FIXTURE_CSR, machine_id, "Fixture Mac", access)
         .await
         .expect("certificate request");
     portal.revoke_development_certificate(TEAM, Platform::Ios, &serial, access).await.expect("revoke");
@@ -202,7 +204,7 @@ async fn system_actions_preserve_paths_platform_fields_and_typed_responses() {
     assert!(!phone.contains_key("subPlatform"));
     assert_eq!(phone.get("deviceNumber").and_then(Value::as_string), Some("UDID456"));
     assert_eq!(csr.get("machineId").and_then(Value::as_string), Some(machine_id.to_string().as_str()));
-    assert_eq!(csr.get("csrContent").and_then(Value::as_string), Some("fixture CSR"));
+    assert_eq!(csr.get("csrContent").and_then(Value::as_string), Some(FIXTURE_CSR));
 }
 
 #[tokio::test]

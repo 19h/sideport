@@ -219,7 +219,7 @@ impl PortalClient {
         machine_name: &str,
         access: PortalAccess<'_>,
     ) -> Result<String> {
-        checked_text(csr_pem, "CSR", 65_536)?;
+        checked_csr(csr_pem)?;
         checked_text(machine_name, "machine name", 256)?;
 
         let fields = dictionary([
@@ -331,6 +331,18 @@ impl PortalClient {
 
         Ok(response)
     }
+}
+
+/// `csrContent` is the PEM text itself, including its line breaks (recovered `public_bytes(PEM)`).
+fn checked_csr(value: &str) -> Result<()> {
+    let framed = value.trim_start().starts_with("-----BEGIN CERTIFICATE REQUEST-----")
+        && value.trim_end().ends_with("-----END CERTIFICATE REQUEST-----");
+
+    if !framed || value.len() > 65_536 || value.contains('\0') {
+        return Err(Error::Invalid("CSR"));
+    }
+
+    Ok(())
 }
 
 fn checked_text(value: &str, name: &'static str, maximum: usize) -> Result<()> {

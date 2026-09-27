@@ -78,18 +78,43 @@ async fn engine_password_prompt_reaches_remote_authentication_without_retaining_
 }
 
 #[tokio::test]
-async fn remember_password_fails_before_network_without_secret_storage() {
+async fn a_rejected_remembered_login_stores_neither_account_nor_secrets() {
+    let server = MockServer::start().await;
+    let anisette = serde_json::json!({
+        "X-Apple-I-MD": "fixture-otp",
+        "X-Apple-I-MD-M": "fixture-machine-token",
+        "X-Mme-Device-Id": "fixture-device",
+        "X-MMe-Client-Info": "fixture-client",
+        "X-Apple-Locale": "en_US",
+    });
+
+    Mock::given(method("GET"))
+        .and(path("/anisette"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(anisette))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST")).and(path("/grandslam/GsService2")).respond_with(gsa_error(-20209)).mount(&server).await;
+
     let directory = tempfile::tempdir().expect("data directory");
     let engine = Engine::new(EngineConfig {
         data_dir: Some(directory.path().into()),
+        auth_origin: Some(server.uri()),
+        file_secrets: true,
         disable_scheduler: true,
         ..Default::default()
     })
     .expect("engine");
+    let mut settings = engine.settings();
+    settings.anisette = AnisetteSetting::Remote { url: format!("{}/anisette", server.uri()) };
+    engine.update_settings(settings).expect("save settings");
 
     let job = engine.login("fixture@example.test".into(), Some("private-fixture-password".into()), true);
-    let error = job.result().await.expect_err("storage is not implemented");
+    let error = job.result().await.expect_err("fixture service rejection");
 
-    assert!(matches!(error, EngineError::Unsupported(_)));
+    assert!(matches!(&error, EngineError::Auth(message) if message.contains("-20209")));
     assert!(engine.accounts().expect("account list").is_empty());
+
+    let secrets = std::fs::read(directory.path().join("secrets.json")).unwrap_or_default();
+    assert!(!String::from_utf8_lossy(&secrets).contains("private-fixture-password"));
+    assert!(!secrets.windows(8).any(|window| window == b"password"));
 }

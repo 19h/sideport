@@ -28,6 +28,7 @@ pkcs8.workspace = true
 const-oid.workspace = true
 signature.workspace = true
 rand.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
