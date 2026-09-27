@@ -2,7 +2,8 @@
 
 Rust reimplementation of Sideloadly 0.60's client behavior, as recovered by reverse
 engineering. The full rewrite is in progress. The requirement-by-requirement evidence is in
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and the current resume point is in
+[docs/HANDOVER.md](docs/HANDOVER.md).
 
 The current executable inspects IPA, flipped IPA, zipped-app, and app-directory inputs.
 It exports original, unsigned, and ad-hoc IPAs with recursive metadata edits, extension

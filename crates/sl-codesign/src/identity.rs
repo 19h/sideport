@@ -71,15 +71,7 @@ impl SigningIdentity {
             .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
             .ok_or_else(|| Error::Certificate("certificate expiration is out of range".into()))?;
 
-        let mut chain = Vec::new();
-
-        for certificate_pem in chain_pem.split_inclusive("-----END CERTIFICATE-----") {
-            if certificate_pem.trim().is_empty() {
-                continue;
-            }
-
-            chain.push(Certificate::from_pem(certificate_pem.trim()).map_err(cert_error)?);
-        }
+        let chain = pem_certificates(chain_pem)?;
 
         Ok(Self { certificate, chain, key, certificate_der: certificate_der.to_vec(), team_id, common_name, expires })
     }
@@ -168,13 +160,28 @@ pub fn build_csr_pem(key: &RsaPrivateKey, common_name: &str, organization: &str)
     request.to_pem(der::pem::LineEnding::LF).map_err(cert_error)
 }
 
+/// Decode concatenated PEM CERTIFICATE blocks. Surrounding whitespace between blocks is ignored.
+pub(crate) fn pem_certificates(text: &str) -> Result<Vec<Certificate>> {
+    let mut certificates = Vec::new();
+
+    for certificate_pem in text.split_inclusive("-----END CERTIFICATE-----") {
+        if certificate_pem.trim().is_empty() {
+            continue;
+        }
+
+        certificates.push(Certificate::from_pem(certificate_pem.trim()).map_err(cert_error)?);
+    }
+
+    Ok(certificates)
+}
+
 fn subject_attribute(oid: ObjectIdentifier, value: Any) -> Result<RelativeDistinguishedName> {
     let attributes = SetOfVec::try_from(vec![AttributeTypeAndValue { oid, value }]).map_err(cert_error)?;
 
     Ok(RelativeDistinguishedName(attributes))
 }
 
-fn subject_string(certificate: &Certificate, oid: ObjectIdentifier) -> Result<String> {
+pub(crate) fn subject_string(certificate: &Certificate, oid: ObjectIdentifier) -> Result<String> {
     let values: Vec<_> = certificate
         .tbs_certificate
         .subject

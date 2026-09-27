@@ -15,6 +15,8 @@ pub enum Error {
     Cms(String),
     #[error("provisioning profile error: {0}")]
     Profile(String),
+    #[error("provisioning profile trust error: {0}")]
+    ProfileTrust(String),
     #[error("entitlements error: {0}")]
     Entitlements(String),
     #[error("plist error: {0}")]

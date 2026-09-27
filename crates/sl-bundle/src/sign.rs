@@ -3,7 +3,7 @@ use crate::files;
 use crate::{Bundle, BundleArchive, BundleKind, Control, Error, Phase, Result};
 use plist::Dictionary;
 use rayon::prelude::*;
-use sl_codesign::{CodeKind, ProvisioningProfile, SignOptions, Signer};
+use sl_codesign::{CodeKind, ProfileTarget, ProvisioningProfile, SignOptions, Signer};
 use std::{
     collections::BTreeMap,
     fs,
@@ -51,11 +51,20 @@ impl BundleArchive {
 
         let bundle = self.bundle()?;
         let identifier = bundle.identifier()?;
-        let has_profile =
-            request.profile.is_some() || request.profiles.is_some_and(|profiles| profiles.contains_key(identifier));
+        let profile = request.profiles.and_then(|profiles| profiles.get(identifier)).or(request.profile);
 
-        if request.signer.is_some_and(|signer| !signer.is_adhoc()) && !has_profile {
-            return Err(Error::Bundle("identity signing requires the main app's provisioning profile".into()));
+        if let Some(Signer::Identity(identity)) = request.signer {
+            let profile = profile
+                .ok_or_else(|| Error::Bundle("identity signing requires the main app's provisioning profile".into()))?;
+            let target = ProfileTarget {
+                team_id: identity.team_id(),
+                bundle_id: identifier,
+                certificate_der: identity.certificate_der(),
+                device_udid: None,
+                now: chrono::Utc::now(),
+            };
+
+            profile.validate_for(target)?;
         }
 
         let inherited = request.profile.map(|profile| profile.entitlements.clone());

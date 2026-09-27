@@ -21,10 +21,12 @@ pub mod identity;
 pub mod profile;
 pub mod requirements;
 pub mod signature;
+pub mod trust;
 
 pub use error::{Error, Result};
 pub use identity::{SigningIdentity, build_csr_pem, generate_signing_key};
-pub use profile::ProvisioningProfile;
+pub use profile::{ProfileTarget, ProvisioningProfile};
+pub use trust::ProfileTrust;
 pub use sl_macho as macho;
 
 use std::sync::Arc;

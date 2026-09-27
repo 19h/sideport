@@ -143,6 +143,7 @@ fn identity_frameworks_and_extensions_inherit_and_merge_entitlements() {
         name: "Fixture".into(),
         uuid: "FIXTURE".into(),
         team_identifiers: vec!["TEAM123456".into()],
+        application_identifier_prefixes: vec!["TEAM123456".into()],
         app_id_name: None,
         entitlements,
         creation_date: "2026-01-01T00:00:00Z".parse().expect("creation"),
@@ -150,7 +151,10 @@ fn identity_frameworks_and_extensions_inherit_and_merge_entitlements() {
         time_to_live_days: None,
         local_provision: false,
         provisioned_devices: Vec::new(),
-        developer_certificates: Vec::new(),
+        developer_certificates: vec![match &signer {
+            Signer::Identity(identity) => identity.certificate_der().to_vec(),
+            Signer::AdHoc => unreachable!("fixture identity"),
+        }],
     };
 
     let mut archive = BundleArchive::unpack(&root, ArchiveLimits::default(), Control::default()).expect("unpack");

@@ -5,7 +5,7 @@ use cms::{
 use const_oid::ObjectIdentifier;
 use der::asn1::{OctetString, SetOfVec};
 use der::{Any, Encode};
-use sl_codesign::ProvisioningProfile;
+use sl_codesign::{ProfileTarget, ProvisioningProfile};
 
 // Intentionally unsigned CMS structure: these tests exercise decoding, not trust validation.
 fn envelope(payload: &[u8], detached: bool) -> Vec<u8> {
@@ -48,6 +48,7 @@ fn payload() -> plist::Dictionary {
     profile.insert("Name".into(), "Test Profile".into());
     profile.insert("UUID".into(), "TEST-UUID".into());
     profile.insert("TeamIdentifier".into(), plist::Value::Array(vec!["TEAM123456".into()]));
+    profile.insert("ApplicationIdentifierPrefix".into(), plist::Value::Array(vec!["OLDPREFIX".into()]));
     profile.insert("Entitlements".into(), plist::Value::Dictionary(entitlements));
 
     profile.insert("CreationDate".into(), plist::Value::Date(creation_date));
@@ -73,10 +74,73 @@ fn profile_decoding_preserves_envelope_dates_and_prefix_semantics() {
     assert_eq!(profile.raw, raw);
     assert_eq!(profile.bundle_id(), Some("com.example.*"));
     assert_eq!(profile.team_identifiers, ["TEAM123456"]);
+    assert_eq!(profile.application_identifier_prefixes, ["OLDPREFIX"]);
     assert_eq!(profile.provisioned_devices, ["device-1"]);
     assert_eq!(profile.time_to_live_days, Some(7));
     assert!(profile.local_provision);
     assert_eq!((profile.expiration_date - profile.creation_date).num_seconds(), 7 * 86400);
+}
+
+fn parsed_profile() -> ProvisioningProfile {
+    let xml = sl_codesign::entitlements::to_xml(&payload()).expect("plist");
+
+    ProvisioningProfile::parse(&envelope(&xml, false)).expect("profile")
+}
+
+fn target() -> ProfileTarget<'static> {
+    let now =
+        chrono::DateTime::parse_from_rfc3339("2026-09-04T12:00:00Z").expect("fixture time").with_timezone(&chrono::Utc);
+
+    ProfileTarget {
+        team_id: "TEAM123456",
+        bundle_id: "com.example.demo",
+        certificate_der: &[1, 2, 3],
+        device_udid: Some("DEVICE1"),
+        now,
+    }
+}
+
+#[test]
+fn profile_validation_accepts_matching_legacy_prefix_wildcard_and_device() {
+    let mut profile = parsed_profile();
+    profile.validate_for(target()).expect("matching profile");
+
+    profile.entitlements.insert("application-identifier".into(), "OLDPREFIX.com.example.demo".into());
+    profile.validate_for(target()).expect("explicit app ID");
+
+    profile.entitlements.insert("application-identifier".into(), "OLDPREFIX.*".into());
+    profile.validate_for(target()).expect("team wildcard");
+}
+
+#[test]
+fn profile_validation_rejects_wrong_time_team_bundle_certificate_and_device() {
+    let profile = parsed_profile();
+    let expected = target();
+
+    for case in [
+        ProfileTarget { team_id: "OTHERTEAM", ..expected },
+        ProfileTarget { bundle_id: "com.examples.demo", ..expected },
+        ProfileTarget { bundle_id: "com.example", ..expected },
+        ProfileTarget { certificate_der: &[9, 9, 9], ..expected },
+        ProfileTarget { device_udid: Some("other-device"), ..expected },
+        ProfileTarget { device_udid: Some(""), ..expected },
+        ProfileTarget { now: profile.creation_date - chrono::Duration::seconds(1), ..expected },
+        ProfileTarget { now: profile.expiration_date, ..expected },
+    ] {
+        assert!(profile.validate_for(case).is_err(), "unexpectedly accepted {case:?}");
+    }
+
+    let mut wrong_prefix = profile.clone();
+    wrong_prefix.application_identifier_prefixes = vec!["DIFFERENT".into()];
+    assert!(wrong_prefix.validate_for(expected).is_err());
+
+    let mut wrong_team_entitlement = profile.clone();
+    wrong_team_entitlement.entitlements.insert("com.apple.developer.team-identifier".into(), "OTHERTEAM".into());
+    assert!(wrong_team_entitlement.validate_for(expected).is_err());
+
+    let mut wrong_app_id = profile;
+    wrong_app_id.entitlements.insert("application-identifier".into(), "OLDPREFIX.com.exampled.*".into());
+    assert!(wrong_app_id.validate_for(expected).is_err());
 }
 
 #[test]
