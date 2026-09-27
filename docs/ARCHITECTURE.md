@@ -1,85 +1,83 @@
-# Sideport — architecture
+# Sideport architecture and implementation evidence
 
-Sideport is a from-scratch Rust reimplementation of the *developer sideloading workflow* documented in
-`../SIDELOADLY_DECONSTRUCTED.md` and `../notes/`: take an `.ipa` you are entitled to install, provision it
-with **your own** Apple ID (free or paid developer account), re-sign it and install it on **your own**
-device, then keep it refreshed before the free-profile expiry.
+The objective is a complete Rust implementation of the behavior documented in
+`../../SIDELOADLY_DECONSTRUCTED.md` and `../../notes/`, with a GPUI desktop interface.
+The reconstruction describes Sideloadly 0.60; it is evidence for client behavior, not proof
+that every recovered endpoint or operating-system integration still works.
 
-## Scope
+No documented workflow is excluded from the objective. Private services require configurable
+endpoints and credentials, protocol fixtures, and an explicit live-verification status. Their
+server implementations are unknown.
 
-In scope (parity with the documented workflow):
+## Requirements and evidence
 
-| Area | What |
-|---|---|
-| Apple ID | GrandSlam SRP-6a login, trusted-device / SMS 2FA, Xcode app-token, session persistence |
-| Anisette | macOS local provider (AOSKit, same as the Mac's own provisioning); user-configured remote (v1 JSON) server |
-| Developer portal | teams, devices, certificates (CSR, reuse, revoke-oldest on limit), app IDs, team provisioning profiles, free/paid detection |
-| Bundle | IPA unpack, Info.plist edits (name, version, bundle id policy, min OS, device-family limits, file sharing, arbitrary keys), extension / watch-app removal, file replacement, app icon replacement, entitlement overrides |
-| Code signing | pure-Rust Mach-O signer: SHA-1 + SHA-256 CodeDirectories, requirements, XML + DER entitlements, CMS with Apple CDHash attributes, CodeResources seal, fat binaries, ad-hoc mode |
-| Install | usbmuxd discovery (USB + Wi-Fi), lockdown, resumable AFC upload (file or streamed zip), installation_proxy with progress, retry state machine |
-| Lifecycle | installations database, expiry tracking, automatic refresh, profile inspection/removal on device |
-| Front-ends | gpui desktop app, scriptable CLI |
+| Requirement | Source | Current evidence | Evidence still required |
+|---|---|---|---|
+| Thin/fat Mach-O parsing, commands, dual CodeDirectories, requirements, XML/DER entitlements, CMS, resource seals | CODESIGN_NOTES; report §10 | Implemented in sl-macho/sl-codesign; 30 tests, Apple codesign and OpenSSL interoperability; forward header inspection | Real development identity/profile/device acceptance; broader malformed-format coverage |
+| IPA, zipped-app and directory inputs; flipped IPA; filename portability; pruning; recursive metadata edits; replacements; icons | BUNDLE_NOTES §§2–5; report §7 | Implemented extraction, header/metadata inspection, flipped input, pruning, recursive metadata and replacements; PNG/CgBI inspection fixtures | Portable filename indirection, icon editing/asset handling; arbitrary Apple CgBI interoperability; additional platform verification |
+| Library/framework/resource injection; dependency/rpath rewrites; remote/special sources; ar and compressed deb packages | BUNDLE_NOTES §6; report §7.4 | Local library/framework/resource copying and dependency/rpath rewriting implemented; native injected code executes | Remote/special source resolution and deb/ar/compression preparation |
+| Child-before-parent signing, provisioning, entitlement merging, unsigned/original/ad-hoc modes | BUNDLE_NOTES §7; report §§3,7.5–7.6 | Deep traversal, profiles and merged/inherited entitlements implemented; nested universal codesign verification; real engine/CLI original/unsigned/ad-hoc exports | Real Apple profiles/device acceptance; identity/provisioning engine integration |
+| Deterministic IPA, forward streaming, atomic file and folder outputs | BUNDLE_NOTES §8; report §7.7 | Forward-only deterministic ZIP/ZIP64 and atomic files verified by three readers; cancellation preserves existing output | Folder exports and resumable device upload integration |
+| Local AOSKit, Mail plugin notifications/kbsync, remote anisette and fallback policy | AUTH_NOTES; report §4 | Real bounded remote provider, shared cache, engine/CLI checks; HTTP, cancellation, clock, decompression and validation tests; docs/APPLE.md | Native AOSKit/Mail bridge, fallback selection, private provider integration and live checks |
+| GSA SRP, legacy IDMS, app tokens, trusted-device/SMS 2FA, session migration/persistence | AUTH_NOTES; report §5 | SRP/negotiation/CBC/GCM primitives and bounded GSA init/complete/apptokens transport; eight independent Python vectors; mock-server alternate-anisette, second-factor and cancellation tests; non-demo engine login/prompt bridge and memory-only session; docs/APPLE.md | Legacy IDMS, account UI/CLI, portal teams, session migration/persistence and live account verification; uncertain second-factor branches require live parity checks |
+| Portal teams, devices, certificates/CSR/reuse/revocation, app IDs, profiles, free/paid/tvOS policies | AUTH_NOTES; report §§3,6 | CSR/key/identity primitives implemented | Portal transport, policy tests and live account verification |
+| USB/Wi-Fi discovery, lockdown/pairing, AFC resumable file/ZIP upload, installation retry/progress | MOBDEV_NOTES; report §8.1 | Device crate is a stub; idevice dependency present | Real implementation, simulated failures and physical-device verification |
+| Apps/profiles management, syslog, Developer Disk Images and JIT | MOBDEV_NOTES; report §12 | Pending | Protocol tests and physical-device verification |
+| Apple Silicon conversion, entitlement adjustments, SINF enrichment and application installation | report §8.3; reconstructed Go | Pending | Implementation and native Mac verification |
+| URI/download channels, HTTP resume, App Store authentication/purchase/download, FairPlay metadata/kbsync | report §9; reconstructed Go | Pending | Client implementation, controlled transport fixtures and live service verification |
+| Stored files, installations DB, refresh policy/scheduler, tray/autostart and local IPC | report §§11,14 | Real export/inspection engine; bounded atomic settings persistence; runtime/job/prompt cancellation and restart fixtures | Accounts/sessions/installations DB, refresh, expiry, tray/autostart and IPC integration |
+| Feature tokens, Patreon OAuth, private remote providers and update/version protocol | report §§3,4.3,13 | Pending | Configurable client implementations, recovered protocol fixtures; server behavior remains unknown |
+| CLI and intuitive GPUI interface covering the workflows above | report §§2–3,11–12; objective | CLI inspection/export/JSON/typed edits/injection/cancellation; official Zed GPUI inspection/editor/export with native pickers, progress, prompts, cancellation and themes; real engine/GPUI interaction tests and native window inspection | Remaining CLI/desktop workflows; complete accessibility, additional platform/runtime and full account/device user-flow evidence |
 
-Deliberately **not** implemented:
+This ledger records verification boundaries. A passing crate test is evidence for that test's
+covered behavior, not completion of a workflow that depends on accounts, devices or native services.
 
-* Third-party tweak injection pipeline (Substrate/Substitute downloads, `.deb` unpacking, "spoofer" tweaks) —
-  its purpose is modifying/unlocking other people's apps and defeating their integrity checks.
-* App Store purchase/download, FairPlay `.sinf` enrichment, kbsync generation, the Mail.app plug-in.
-* Anything tied to Sideloadly's commercial backend: feature tokens, paid-feature gating, its private remote
-  anisette endpoint, self-update, Patreon OAuth. Sideport has no paywall and talks only to Apple and to
-  servers the user configures.
-* The legacy IDMS (`clientDAW.cgi`) login, which Apple no longer serves.
+## Crate responsibilities
 
-## Crates
+- sl-macho: checked binary parsing and load-command rewriting.
+- sl-codesign: identities, profiles, signature encodings and resource seals.
+- sl-bundle: archive preparation, bundle editing, injection and ordered signing.
+- sl-apple: authentication, anisette, portal and Store clients.
+- sl-device: device transports, services, installation and utilities.
+- sl-engine: jobs, policies, storage, refresh, IPC and integration.
+- sl-cli: scriptable commands.
+- sl-app: GPUI desktop interface.
 
-```
-sl-macho     Mach-O / fat parsing and load-command editing                (no I/O, no deps on other crates)
-sl-codesign  signature generation, CodeResources, CMS, DER entitlements,    (sl-macho)
-             provisioning-profile decoding, signing identities
-sl-bundle    IPA unpack (parallel), bundle model, patching, deep signing,   (sl-codesign, sl-macho)
-             deterministic (streamable) repacking
-sl-apple     anisette providers, GSA SRP auth + 2FA, developerservices2      (independent)
-sl-device    usbmuxd/lockdown/AFC/instproxy/misagent via the `idevice` crate (independent)
-sl-engine    job model + pipeline, provisioning policy, install retry logic,  (all of the above)
-             persistent store (accounts, secrets, keys, settings, installations DB), refresh scheduler
-sl-cli       `sideport` command-line front-end                              (sl-engine)
-sl-app       gpui desktop app                                               (sl-engine)
-```
+Network/device work runs on the engine's Tokio runtime. CPU-intensive work runs outside the
+UI executor. Front ends consume typed job events and prompts. Operations need cancellation
+checks inside transfer, extraction, hashing and packing loops. Storage and exported output
+must remain recoverable after failures.
 
-### Runtime model
+## Assumption register
 
-* The engine owns a multi-threaded **tokio** runtime (network + device I/O). CPU-heavy work (unzip, hashing,
-  signing, compression) runs on **rayon** inside `spawn_blocking`.
-* Front-ends never touch tokio directly: `Engine` methods return runtime-agnostic futures/channels
-  (`async-channel`, `futures::oneshot`), so gpui's executor can await them.
-* A running job emits a stream of `JobEvent`s (log line, stage/progress, info facts, prompt requests,
-  completion). Prompts carry a oneshot reply channel; dropping it = cancel.
-* Cancellation is cooperative through a `CancellationToken` checked between steps and inside long loops.
+- A1: Recovered constants and control flow describe Sideloadly 0.60 accurately enough to guide
+  implementation. Dependent results: parity claims. Probe: compare notes, reconstructed Python,
+  decompiled Go and generated fixtures; resolve contradictions explicitly.
+- A2: A recovered external protocol may still be served. Dependent results: live authentication,
+  provisioning, download and private-service claims. Probe: controlled integration followed by
+  authorized live verification. Until checked, current availability is unknown.
+- A3: Native codesign/OpenSSL acceptance establishes encoding interoperability for the fixtures.
+  Dependent results: signing-format validation. Probe: independent byte decoding, tamper rejection
+  and physical-device installation. Native fixture acceptance does not establish Apple trust.
+- A4: Input files remain stable while processed. Dependent results: parallel extraction and repeatable
+  output. Probe: capture and compare source metadata, reject inconsistent entry sizes and CRCs,
+  and test interrupted/mutated input.
 
-### Performance choices
+## Bounded observations
 
-* Unzip uses a memory-mapped archive and extracts entries in parallel.
-* CodeResources hashing, per-page CodeDirectory hashing and independent nested bundles are signed in parallel;
-  dependency order is respected (children before parents).
-* The signature size is computed exactly from a placeholder build, so each binary is hashed once.
-* The output IPA can be streamed straight into the AFC upload (no second copy on disk); the zip is
-  deterministic so an interrupted upload resumes by skipping already-uploaded bytes.
+- High impact: nested signing and portal policies must be tested together; correct binary signatures
+  alone do not establish installable bundles.
+- High impact: the reconstruction includes services whose current behavior is unknown. Model and
+  test the recovered client protocol without reporting unperformed live checks as complete.
+- Medium impact: platform filename normalization and symlink semantics affect extraction and output
+  names. Include collision, escape, Unicode and long-name cases in archive verification.
+- Medium impact: streaming determinism governs resumable uploads. Verify identical complete bytes
+  and suffixes across repeated runs, including ZIP64.
+- Low impact: rustfmt can erase encoding groups. Follow AGENTS.md and review the formatted source.
 
-### Security choices
+## Quality gates
 
-* TLS is always verified. Apple's `gsa.apple.com` chains to *Apple Root CA*, which is not in public root
-  stores, so that root is embedded and added as an extra trust anchor.
-* Session tokens and (optional) saved passwords live in the macOS Keychain; a 0600 file store is the fallback
-  on other platforms and in tests. The signing key is written 0600.
-* Archive extraction rejects absolute paths, `..` components and symlinks escaping the bundle.
-
-### Testing strategy
-
-* Unit tests per crate with hand-computed vectors (SRP against an in-test server implementation, AES-CBC/GCM
-  token decoding, DER entitlements, requirement serialization, CodeDirectory layout).
-* `codesign`-verified integration tests on macOS: binaries we sign are checked with `codesign --verify` /
-  `codesign -dvvv`, and CMS blobs with `openssl cms -verify`.
-* Fixture IPAs are **generated by the tests** (tiny arm64 apps compiled with the local Xcode toolchain, or
-  synthetic Mach-Os when no toolchain is present) — no third-party app binaries.
-* Mock Apple endpoints (wiremock + an SRP server) drive the full login/provisioning flow; a fake device
-  implementation drives the install retry state machine.
+Before completion, every ledger row requires current implementation and verification evidence.
+Record assumptions and probes, resolve contradictions, use primary format/protocol sources, verify
+units and calculations where applicable, and review the observations above. UI completion requires
+runtime/rendered evidence; a compiling GPUI dependency is insufficient.

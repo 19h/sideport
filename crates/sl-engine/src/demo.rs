@@ -22,19 +22,11 @@ struct DemoState {
 }
 
 fn free_team() -> TeamSummary {
-    TeamSummary {
-        team_id: "A1B2C3D4E5".into(),
-        name: "Jane Appleseed (Personal Team)".into(),
-        kind: TeamKind::Free,
-    }
+    TeamSummary { team_id: "A1B2C3D4E5".into(), name: "Jane Appleseed (Personal Team)".into(), kind: TeamKind::Free }
 }
 
 fn org_team() -> TeamSummary {
-    TeamSummary {
-        team_id: "Z9Y8X7W6V5".into(),
-        name: "Example Labs Ltd".into(),
-        kind: TeamKind::Organization,
-    }
+    TeamSummary { team_id: "Z9Y8X7W6V5".into(), name: "Example Labs Ltd".into(), kind: TeamKind::Organization }
 }
 
 impl Demo {
@@ -50,18 +42,9 @@ impl Demo {
         };
         let spec = |name: &str| JobSpec {
             source: PathBuf::from(format!("/Users/jane/Builds/{name}.ipa")),
-            target: Target::Device {
-                udid: "00008120-001A2B3C4D5E6F70".into(),
-                prefer_network: false,
-            },
-            signing: SigningMode::AppleId {
-                apple_id: "jane@example.com".into(),
-            },
-            options: AppOptions {
-                track_for_refresh: true,
-                remove_watch_app: true,
-                ..Default::default()
-            },
+            target: Target::Device { udid: "00008120-001A2B3C4D5E6F70".into(), prefer_network: false },
+            signing: SigningMode::AppleId { apple_id: "jane@example.com".into() },
+            options: AppOptions { track_for_refresh: true, remove_watch_app: true, ..Default::default() },
         };
         let installations = vec![
             Installation {
@@ -101,13 +84,7 @@ impl Demo {
                 spec: spec("Trailhead"),
             },
         ];
-        Self {
-            state: Arc::new(Mutex::new(DemoState {
-                accounts: vec![account],
-                installations,
-                next_installation: 3,
-            })),
-        }
+        Self { state: Arc::new(Mutex::new(DemoState { accounts: vec![account], installations, next_installation: 3 })) }
     }
 
     pub(crate) fn devices(&self) -> Vec<DeviceInfo> {
@@ -142,15 +119,11 @@ impl Demo {
     pub(crate) async fn test_anisette(&self, setting: AnisetteSetting) -> Result<String> {
         tokio::time::sleep(std::time::Duration::from_millis(600)).await;
         match setting {
-            AnisetteSetting::Local => {
-                Ok("MacBookPro18,3 with serial number C02XXXXXXXXX running macOS 15.1".into())
-            }
+            AnisetteSetting::Local => Ok("MacBookPro18,3 with serial number C02XXXXXXXXX running macOS 15.1".into()),
             AnisetteSetting::Remote { url } if url.starts_with("https://") => {
                 Ok("iMac20,1 with serial number C02YYYYYYYYY running macOS 13.6".into())
             }
-            AnisetteSetting::Remote { .. } => {
-                Err(EngineError::Anisette("URL must use https://".into()))
-            }
+            AnisetteSetting::Remote { .. } => Err(EngineError::Anisette("URL must use https://".into())),
         }
     }
 
@@ -164,22 +137,14 @@ impl Demo {
         ctx.stage(Stage::Authenticating);
         let (_password, remember) = match password {
             Some(p) => (p, remember),
-            None => match ctx
-                .ask(PromptKind::Password {
-                    apple_id: apple_id.clone(),
-                    remember,
-                })
-                .await?
-            {
+            None => match ctx.ask(PromptKind::Password { apple_id: apple_id.clone(), remember }).await? {
                 PromptReply::Text { value, remember } => (value, remember),
                 _ => return Err(EngineError::Cancelled),
             },
         };
         ctx.info("Prefetching anisette…");
         tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-        ctx.fact(Fact::AnisetteDevice(
-            "MacBookPro18,3 running macOS 15.1".into(),
-        ));
+        ctx.fact(Fact::AnisetteDevice("MacBookPro18,3 running macOS 15.1".into()));
         ctx.info(format!("Authenticating {apple_id}"));
         tokio::time::sleep(std::time::Duration::from_millis(700)).await;
         loop {
@@ -201,11 +166,7 @@ impl Demo {
             }
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        let teams = if apple_id.contains("org") {
-            vec![free_team(), org_team()]
-        } else {
-            vec![free_team()]
-        };
+        let teams = if apple_id.contains("org") { vec![free_team(), org_team()] } else { vec![free_team()] };
         let account = AccountSummary {
             apple_id: apple_id.clone(),
             default_team: Some(teams[0].team_id.clone()),
@@ -222,10 +183,7 @@ impl Demo {
     }
 
     pub(crate) fn logout(&self, apple_id: &str) {
-        self.state
-            .lock()
-            .accounts
-            .retain(|a| a.apple_id != apple_id);
+        self.state.lock().accounts.retain(|a| a.apple_id != apple_id);
     }
 
     pub(crate) fn certificates(&self, _apple_id: &str) -> Vec<CertificateSummary> {
@@ -257,20 +215,11 @@ impl Demo {
     }
 
     pub(crate) fn inspect(&self, path: PathBuf) -> AppSummary {
-        let stem = path
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "App".into());
-        let file_size = std::fs::metadata(&path)
-            .map(|m| m.len())
-            .unwrap_or(48_234_112);
+        let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "App".into());
+        let file_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(48_234_112);
         AppSummary {
             name: stem.clone(),
-            bundle_id: format!(
-                "com.example.{}",
-                stem.to_lowercase()
-                    .replace(|c: char| !c.is_ascii_alphanumeric(), "")
-            ),
+            bundle_id: format!("com.example.{}", stem.to_lowercase().replace(|c: char| !c.is_ascii_alphanumeric(), "")),
             version: Some("142".into()),
             short_version: Some("3.2.0".into()),
             minimum_os: Some("16.0".into()),
@@ -291,6 +240,7 @@ impl Demo {
             file_size,
             encrypted: false,
             device_family: vec![1, 2],
+            warnings: Vec::new(),
             path,
         }
     }
@@ -310,24 +260,10 @@ impl Demo {
             ctx.info(format!("Using saved session for {apple_id}"));
             step(500).await;
             ctx.stage(Stage::Provisioning);
-            let teams = if apple_id.contains("org") {
-                vec![free_team(), org_team()]
-            } else {
-                vec![free_team()]
-            };
+            let teams = if apple_id.contains("org") { vec![free_team(), org_team()] } else { vec![free_team()] };
             let team = if teams.len() > 1 {
-                let choices = teams
-                    .iter()
-                    .cloned()
-                    .map(|team| TeamChoice { team })
-                    .collect();
-                match ctx
-                    .ask(PromptKind::ChooseTeam {
-                        apple_id: apple_id.clone(),
-                        teams: choices,
-                    })
-                    .await?
-                {
+                let choices = teams.iter().cloned().map(|team| TeamChoice { team }).collect();
+                match ctx.ask(PromptKind::ChooseTeam { apple_id: apple_id.clone(), teams: choices }).await? {
                     PromptReply::Choice(i) if i < teams.len() => teams[i].clone(),
                     _ => return Err(EngineError::Cancelled),
                 }
@@ -352,15 +288,9 @@ impl Demo {
                 ctx.info(msg);
                 step(350).await;
             }
-            ctx.fact(Fact::AppIdQuota {
-                remaining: 8,
-                next_release: Some(Utc::now() + Duration::days(3)),
-            });
+            ctx.fact(Fact::AppIdQuota { remaining: 8, next_release: Some(Utc::now() + Duration::days(3)) });
             let exp = Utc::now() + Duration::days(7);
-            ctx.fact(Fact::ProfileExpiry {
-                expires: exp,
-                ttl_days: Some(7),
-            });
+            ctx.fact(Fact::ProfileExpiry { expires: exp, ttl_days: Some(7) });
             expires = Some(exp);
         }
 
@@ -385,9 +315,7 @@ impl Demo {
                 let out = match path {
                     Some(p) => p.clone(),
                     None => match ctx
-                        .ask(PromptKind::SaveFile {
-                            suggested_name: format!("{} Signed.ipa", app.name),
-                        })
+                        .ask(PromptKind::SaveFile { suggested_name: format!("{} Signed.ipa", app.name) })
                         .await?
                     {
                         PromptReply::Path(p) => p,
@@ -400,12 +328,7 @@ impl Demo {
                 }
                 ctx.stage(Stage::Done);
                 ctx.info(format!("Saved {}", out.display()));
-                Ok(JobOutcome {
-                    bundle_id,
-                    exported_to: Some(out),
-                    expires,
-                    installation_id: None,
-                })
+                Ok(JobOutcome { bundle_id, exported_to: Some(out), expires, installation_id: None })
             }
             Target::Device { udid, .. } => {
                 ctx.stage(Stage::Uploading);
@@ -424,38 +347,33 @@ impl Demo {
                 ctx.stage(Stage::Done);
                 ctx.info("Done.");
                 let mut installation_id = None;
-                if spec.options.track_for_refresh {
-                    if let SigningMode::AppleId { apple_id } = &spec.signing {
-                        let mut st = self.state.lock();
-                        let id = st.next_installation;
-                        st.next_installation += 1;
-                        st.installations.push(Installation {
-                            id,
-                            app_name: app.name.clone(),
-                            bundle_id: bundle_id.clone(),
-                            original_bundle_id: app.bundle_id.clone(),
-                            version: app.short_version.clone(),
-                            device_udid: udid.clone(),
-                            device_name: "Jane's iPhone".into(),
-                            apple_id: apple_id.clone(),
-                            team_id: free_team().team_id,
-                            installed_at: Utc::now(),
-                            expires_at: expires,
-                            auto_refresh: true,
-                            last_error: None,
-                            consecutive_failures: 0,
-                            icon_png: None,
-                            spec: spec.clone(),
-                        });
-                        installation_id = Some(id);
-                    }
+                if spec.options.track_for_refresh
+                    && let SigningMode::AppleId { apple_id } = &spec.signing
+                {
+                    let mut st = self.state.lock();
+                    let id = st.next_installation;
+                    st.next_installation += 1;
+                    st.installations.push(Installation {
+                        id,
+                        app_name: app.name.clone(),
+                        bundle_id: bundle_id.clone(),
+                        original_bundle_id: app.bundle_id.clone(),
+                        version: app.short_version.clone(),
+                        device_udid: udid.clone(),
+                        device_name: "Jane's iPhone".into(),
+                        apple_id: apple_id.clone(),
+                        team_id: free_team().team_id,
+                        installed_at: Utc::now(),
+                        expires_at: expires,
+                        auto_refresh: true,
+                        last_error: None,
+                        consecutive_failures: 0,
+                        icon_png: None,
+                        spec: spec.clone(),
+                    });
+                    installation_id = Some(id);
                 }
-                Ok(JobOutcome {
-                    bundle_id,
-                    exported_to: None,
-                    expires,
-                    installation_id,
-                })
+                Ok(JobOutcome { bundle_id, exported_to: None, expires, installation_id })
             }
         }
     }
@@ -465,13 +383,7 @@ impl Demo {
     }
 
     pub(crate) fn set_auto_refresh(&self, id: i64, enabled: bool) {
-        if let Some(i) = self
-            .state
-            .lock()
-            .installations
-            .iter_mut()
-            .find(|i| i.id == id)
-        {
+        if let Some(i) = self.state.lock().installations.iter_mut().find(|i| i.id == id) {
             i.auto_refresh = enabled;
         }
     }
@@ -492,13 +404,7 @@ impl Demo {
         let mut spec = spec;
         spec.options.track_for_refresh = false;
         let outcome = self.run_job(ctx, spec).await?;
-        if let Some(i) = self
-            .state
-            .lock()
-            .installations
-            .iter_mut()
-            .find(|i| i.id == id)
-        {
+        if let Some(i) = self.state.lock().installations.iter_mut().find(|i| i.id == id) {
             i.installed_at = Utc::now();
             i.expires_at = outcome.expires;
             i.last_error = None;

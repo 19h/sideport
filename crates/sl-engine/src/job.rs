@@ -8,6 +8,8 @@ use crate::types::TeamSummary;
 use chrono::{DateTime, Utc};
 use futures::channel::oneshot;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
 /// Coarse phase of a job, in execution order.
@@ -97,33 +99,16 @@ pub enum PromptKind {
     /// Apple ID password (reply: `Text`; `remember` suggests the keychain checkbox default).
     Password { apple_id: String, remember: bool },
     /// Two-factor code (reply: `Text`). `destination` describes where the code went.
-    SecondFactor {
-        apple_id: String,
-        destination: String,
-        code_length: usize,
-        can_request_sms: bool,
-    },
+    SecondFactor { apple_id: String, destination: String, code_length: usize, can_request_sms: bool },
     /// Pick a team (reply: `Choice(index)`).
-    ChooseTeam {
-        apple_id: String,
-        teams: Vec<TeamChoice>,
-    },
+    ChooseTeam { apple_id: String, teams: Vec<TeamChoice> },
     /// Yes/no question (reply: `Confirmed`).
-    Confirm {
-        title: String,
-        message: String,
-        confirm_label: String,
-        destructive: bool,
-    },
+    Confirm { title: String, message: String, confirm_label: String, destructive: bool },
     /// Where to save an exported IPA (reply: `Path`).
     SaveFile { suggested_name: String },
     /// The device vanished mid-install. Reply `Confirmed(true)` to retry now; the engine also completes
     /// the prompt itself (with `DeviceReturned`) if the device reappears.
-    WaitForDevice {
-        udid: String,
-        device_name: String,
-        reason: String,
-    },
+    WaitForDevice { udid: String, device_name: String, reason: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,14 +138,7 @@ impl Prompt {
     /// Create a prompt and the receiver the job awaits.
     pub fn new(id: u64, kind: PromptKind) -> (Self, oneshot::Receiver<PromptReply>) {
         let (tx, rx) = oneshot::channel();
-        (
-            Self {
-                id,
-                kind,
-                reply: Some(tx),
-            },
-            rx,
-        )
+        (Self { id, kind, reply: Some(tx) }, rx)
     }
 
     pub fn answer(mut self, reply: PromptReply) {
@@ -199,12 +177,7 @@ impl<T> JobHandle<T> {
         result: oneshot::Receiver<Result<T, EngineError>>,
         cancel: CancellationToken,
     ) -> Self {
-        Self {
-            id,
-            events,
-            result,
-            cancel,
-        }
+        Self { id, events, result, cancel }
     }
 
     /// Event stream; ends when the job finishes.
@@ -222,8 +195,14 @@ impl<T> JobHandle<T> {
     }
 
     /// Wait for the final result.
-    pub async fn result(self) -> Result<T, EngineError> {
-        self.result.await.unwrap_or(Err(EngineError::Cancelled))
+    pub async fn result(mut self) -> Result<T, EngineError> {
+        (&mut self.result).await.unwrap_or(Err(EngineError::Cancelled))
+    }
+}
+
+impl<T> Drop for JobHandle<T> {
+    fn drop(&mut self) {
+        self.cancel.cancel();
     }
 }
 
@@ -233,6 +212,14 @@ pub struct JobContext {
     events: async_channel::Sender<JobEvent>,
     cancel: CancellationToken,
     next_prompt: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    progress: Arc<parking_lot::Mutex<ProgressState>>,
+}
+
+#[derive(Debug, Default)]
+struct ProgressState {
+    maximum: u64,
+    total: u64,
+    last_sent: Option<(Instant, u64)>,
 }
 
 impl JobContext {
@@ -240,11 +227,8 @@ impl JobContext {
     pub fn channel() -> (Self, async_channel::Receiver<JobEvent>, CancellationToken) {
         let (tx, rx) = async_channel::unbounded();
         let cancel = CancellationToken::new();
-        let ctx = Self {
-            events: tx,
-            cancel: cancel.clone(),
-            next_prompt: Default::default(),
-        };
+        let ctx =
+            Self { events: tx, cancel: cancel.clone(), next_prompt: Default::default(), progress: Default::default() };
         (ctx, rx, cancel)
     }
 
@@ -268,11 +252,29 @@ impl JobContext {
     }
 
     pub fn stage(&self, stage: Stage) {
+        *self.progress.lock() = ProgressState::default();
         let _ = self.events.try_send(JobEvent::Stage(stage));
     }
 
     pub fn progress(&self, done: u64, total: u64) {
-        let _ = self.events.try_send(JobEvent::Progress { done, total });
+        let mut state = self.progress.lock();
+
+        if state.total != total {
+            *state = ProgressState { total, ..ProgressState::default() };
+        }
+
+        state.maximum = state.maximum.max(done);
+        let now = Instant::now();
+        let terminal = total != 0 && state.maximum >= total;
+        let should_send = state.last_sent.is_none_or(|(last, value)| {
+            value != state.maximum && (terminal || now.duration_since(last) >= Duration::from_millis(100))
+        });
+
+        if should_send {
+            let done = state.maximum;
+            let _ = self.events.try_send(JobEvent::Progress { done, total });
+            state.last_sent = Some((now, done));
+        }
     }
 
     pub fn fact(&self, fact: Fact) {
@@ -285,11 +287,7 @@ impl JobContext {
 
     /// Fail with [`EngineError::Cancelled`] if cancellation was requested.
     pub fn checkpoint(&self) -> Result<(), EngineError> {
-        if self.is_cancelled() {
-            Err(EngineError::Cancelled)
-        } else {
-            Ok(())
-        }
+        if self.is_cancelled() { Err(EngineError::Cancelled) } else { Ok(()) }
     }
 
     pub fn cancellation_token(&self) -> CancellationToken {
@@ -298,14 +296,9 @@ impl JobContext {
 
     /// Ask the front-end a question and wait for the answer (or cancellation).
     pub async fn ask(&self, kind: PromptKind) -> Result<PromptReply, EngineError> {
-        let id = self
-            .next_prompt
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let id = self.next_prompt.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let (prompt, rx) = Prompt::new(id, kind);
-        self.events
-            .send(JobEvent::Prompt(prompt))
-            .await
-            .map_err(|_| EngineError::Cancelled)?;
+        self.events.send(JobEvent::Prompt(prompt)).await.map_err(|_| EngineError::Cancelled)?;
         tokio::select! {
             reply = rx => match reply {
                 Ok(PromptReply::Cancel) | Err(_) => Err(EngineError::Cancelled),

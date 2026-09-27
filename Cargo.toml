@@ -37,12 +37,14 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 # data
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+quick-xml = "0.41"
 plist = "1.8"
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
 base64 = "0.22"
 hex = "0.4"
 regex = "1"
+unicode-normalization = "0.1"
 url = "2"
 bytes = "1"
 
@@ -62,7 +64,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 tokio-util = "0.7"
 futures = "0.3"
 async-channel = "2"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json", "gzip", "http2"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json", "gzip", "http2", "cookies"] }
 idevice = { version = "0.1.68", default-features = false, features = ["ring", "usbmuxd", "afc", "installation_proxy", "misagent", "notification_proxy", "pair", "syslog_relay"] }
 
 # crypto (RustCrypto, digest 0.10 generation — mutually compatible, all stable)
@@ -71,10 +73,13 @@ sha1 = { version = "0.10", features = ["oid"] }
 sha2 = { version = "0.10", features = ["oid"] }
 hmac = "0.12"
 pbkdf2 = "0.12"
-aes = "0.8"
+aes = { version = "0.8", features = ["zeroize"] }
 cbc = { version = "0.1", features = ["alloc"] }
-aes-gcm = "0.10"
+aes-gcm = { version = "0.10", features = ["zeroize"] }
 num-bigint = "0.4"
+crypto-bigint = { version = "0.5.5", features = ["zeroize"] }
+subtle = "2"
+zeroize = { version = "1", features = ["derive"] }
 x509-cert = { version = "0.2.5", features = ["builder", "pem"] }
 cms = "0.2.3"
 der = { version = "0.7", features = ["alloc", "derive", "oid", "pem"] }
@@ -96,7 +101,9 @@ objc2-foundation = "0.3"
 clap = { version = "4", features = ["derive", "env"] }
 indicatif = "0.18"
 dialoguer = "0.12"
-gpui-kit = "0.6.6"
+ctrlc = "3.5"
+gpui = "=0.2.2"
+gpui-component = "=0.5.1"
 
 # testing
 proptest = "1"

@@ -12,6 +12,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod blob;
 pub mod cms;
 pub mod code_resources;
 pub mod entitlements;
@@ -71,7 +72,7 @@ pub struct SignOptions<'a> {
     /// (for loose dylibs: the file name without extension).
     pub identifier: &'a str,
     pub kind: CodeKind,
-    /// Entitlements to embed (only honoured for `MainExecutable`/`AppExtension`, and ignored for ad-hoc).
+    /// Entitlements to embed for bundle executables, extensions and frameworks; ignored for dylibs and ad-hoc.
     pub entitlements: Option<&'a plist::Dictionary>,
     /// Raw bytes of the owning bundle's `Info.plist` (special slot -1).
     pub info_plist: Option<&'a [u8]>,

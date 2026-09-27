@@ -67,11 +67,11 @@ pub struct TeamSummary {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccountSummary {
     pub apple_id: String,
-    /// Teams seen at the last successful login (empty until then).
+    /// Teams enumerated by the portal (empty until enumeration succeeds).
     pub teams: Vec<TeamSummary>,
     /// Team used by default for this account (chosen once when several exist).
     pub default_team: Option<String>,
-    /// A valid session token is stored (no password needed until it expires).
+    /// A GSA session token is held by the engine; portal validity is separate.
     pub has_session: bool,
     /// The password is stored in the keychain (enables unattended refresh).
     pub remembers_password: bool,
@@ -125,6 +125,9 @@ pub struct AppSummary {
     pub encrypted: bool,
     /// `UIDeviceFamily` values (1 = iPhone, 2 = iPad, 3 = TV, …).
     pub device_family: Vec<u32>,
+    /// Optional inspection issues, such as an undecodable icon. Empty for older stored records.
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -186,8 +189,22 @@ pub enum ExtensionRemoval {
     Selected(Vec<String>),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LibraryInjection {
+    pub source: PathBuf,
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileReplacement {
+    pub target: PathBuf,
+    /// None removes the target from the prepared app.
+    pub source: Option<PathBuf>,
+}
+
 /// Every user-selectable option of a job. `Default` = "just sign and install".
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AppOptions {
     pub bundle_id: BundleIdPolicy,
     pub display_name: Option<String>,
@@ -203,12 +220,16 @@ pub struct AppOptions {
     pub enable_file_sharing: bool,
     pub extra_info: Vec<InfoOverride>,
     pub remove_extensions: ExtensionRemoval,
-    /// Always true in practice: watch apps cannot be provisioned with a phone profile.
+    /// Defaults to true, matching the recovered phone-profile preparation policy.
     pub remove_watch_app: bool,
     /// PNG to use as the new app icon.
     pub icon: Option<PathBuf>,
     /// Plist merged over the profile's entitlements (keys the profile does not grant will fail install).
     pub entitlements: Option<PathBuf>,
+    #[serde(default)]
+    pub injections: Vec<LibraryInjection>,
+    #[serde(default)]
+    pub replacements: Vec<FileReplacement>,
     /// Stream the signed IPA straight into the device upload instead of writing a temporary file.
     pub stream_upload: bool,
     /// AFC write size in MiB (default 1).
@@ -217,6 +238,31 @@ pub struct AppOptions {
     pub tvos_for_apple_tv: bool,
     /// Remember this job for automatic refresh (Apple ID + device targets only).
     pub track_for_refresh: bool,
+}
+
+impl Default for AppOptions {
+    fn default() -> Self {
+        Self {
+            bundle_id: BundleIdPolicy::Auto,
+            display_name: None,
+            version: None,
+            short_version: None,
+            minimum_os: None,
+            remove_device_restrictions: false,
+            enable_file_sharing: false,
+            extra_info: Vec::new(),
+            remove_extensions: ExtensionRemoval::Keep,
+            remove_watch_app: true,
+            icon: None,
+            entitlements: None,
+            injections: Vec::new(),
+            replacements: Vec::new(),
+            stream_upload: false,
+            upload_chunk_mib: None,
+            tvos_for_apple_tv: false,
+            track_for_refresh: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -312,6 +358,7 @@ pub enum ThemePreference {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RefreshSettings {
     pub enabled: bool,
     /// Refresh when fewer than this many hours remain.
@@ -323,18 +370,16 @@ pub struct RefreshSettings {
 
 impl Default for RefreshSettings {
     fn default() -> Self {
-        Self {
-            enabled: true,
-            threshold_hours: 48,
-            check_interval_minutes: 30,
-            allow_network: true,
-        }
+        Self { enabled: true, threshold_hours: 48, check_interval_minutes: 30, allow_network: true }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct Settings {
     pub anisette: AnisetteSetting,
+    /// Optional provider tried after a GSA complete-operation anisette mismatch.
+    pub alternate_anisette: Option<AnisetteSetting>,
     pub refresh: RefreshSettings,
     /// Default for [`AppOptions::stream_upload`].
     pub stream_upload: bool,

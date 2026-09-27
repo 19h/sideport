@@ -3,12 +3,15 @@
 //! All async methods are executor-agnostic: work is spawned onto the engine's own tokio runtime and the
 //! returned future only awaits a oneshot, so gpui (or any executor) can drive it.
 
+mod auth;
+
 use crate::demo::Demo;
 use crate::error::{EngineError, Result};
 use crate::job::{JobContext, JobHandle};
 use crate::types::*;
 use futures::channel::oneshot;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -25,34 +28,49 @@ pub struct EngineConfig {
     pub file_secrets: bool,
     /// Do not start the background refresh scheduler (CLI one-shots, tests).
     pub disable_scheduler: bool,
+    /// Override the GSA origin for controlled service fixtures.
+    pub auth_origin: Option<String>,
 }
 
 /// Notifications from the background refresh scheduler.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RefreshEvent {
-    Started {
-        installation_id: i64,
-        app_name: String,
-    },
-    Succeeded {
-        installation_id: i64,
-        app_name: String,
-        expires: Option<chrono::DateTime<chrono::Utc>>,
-    },
-    Failed {
-        installation_id: i64,
-        app_name: String,
-        error: String,
-    },
+    Started { installation_id: i64, app_name: String },
+    Succeeded { installation_id: i64, app_name: String, expires: Option<chrono::DateTime<chrono::Utc>> },
+    Failed { installation_id: i64, app_name: String, error: String },
 }
 
 #[derive(Debug)]
 struct Inner {
-    runtime: tokio::runtime::Runtime,
+    runtime: Arc<RuntimeOwner>,
     data_dir: PathBuf,
     settings: RwLock<Settings>,
+    auth_origin: String,
+    accounts: Mutex<BTreeMap<String, LiveAccount>>,
     demo: Option<Demo>,
     next_job: AtomicU64,
+    device_subscribers: Mutex<Vec<async_channel::Sender<Vec<DeviceInfo>>>>,
+    refresh_subscribers: Mutex<Vec<async_channel::Sender<RefreshEvent>>>,
+}
+
+#[derive(Debug)]
+struct LiveAccount {
+    summary: AccountSummary,
+    session: sl_apple::auth::AuthSession,
+}
+
+#[derive(Debug)]
+struct RuntimeOwner {
+    runtime: Option<tokio::runtime::Runtime>,
+    handle: tokio::runtime::Handle,
+}
+
+impl Drop for RuntimeOwner {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.runtime.take() {
+            runtime.shutdown_background();
+        }
+    }
 }
 
 /// Cheaply cloneable engine handle.
@@ -68,6 +86,9 @@ impl Engine {
             .enable_all()
             .build()
             .map_err(|e| EngineError::Other(format!("failed to start runtime: {e}")))?;
+        let handle = runtime.handle().clone();
+        let runtime = Arc::new(RuntimeOwner { runtime: Some(runtime), handle });
+
         let data_dir = match config.data_dir {
             Some(d) => d,
             None => dirs::data_dir()
@@ -75,13 +96,21 @@ impl Engine {
                 .join("Sideport"),
         };
         let demo = config.demo.then(Demo::new);
+        let settings = crate::settings::load(&data_dir)?;
+        let auth_origin = config.auth_origin.unwrap_or_else(|| "https://gsa.apple.com".into());
+        sl_apple::auth::AuthClient::with_origin(&auth_origin).map_err(|error| EngineError::Auth(error.to_string()))?;
+
         Ok(Self {
             inner: Arc::new(Inner {
                 runtime,
                 data_dir,
-                settings: RwLock::new(Settings::default()),
+                settings: RwLock::new(settings),
+                auth_origin,
+                accounts: Mutex::new(BTreeMap::new()),
                 demo,
                 next_job: AtomicU64::new(1),
+                device_subscribers: Mutex::new(Vec::new()),
+                refresh_subscribers: Mutex::new(Vec::new()),
             }),
         })
     }
@@ -102,20 +131,34 @@ impl Engine {
     }
 
     pub fn update_settings(&self, settings: Settings) -> Result<()> {
-        *self.inner.settings.write() = settings;
+        let mut current = self.inner.settings.write();
+        crate::settings::save(&self.inner.data_dir, &settings)?;
+        *current = settings;
+
         Ok(())
     }
 
     /// Fetch anisette with the given setting and describe the machine Apple will see.
-    pub fn test_anisette(
-        &self,
-        setting: AnisetteSetting,
-    ) -> impl Future<Output = Result<String>> + use<> {
+    pub fn test_anisette(&self, setting: AnisetteSetting) -> impl Future<Output = Result<String>> + use<> {
         let demo = self.inner.demo.clone();
+
         self.run(async move {
-            match demo {
-                Some(d) => d.test_anisette(setting).await,
-                None => Err(not_yet()),
+            if let Some(demo) = demo {
+                return demo.test_anisette(setting).await;
+            }
+
+            match setting {
+                AnisetteSetting::Remote { url } => {
+                    let provider = sl_apple::anisette::RemoteAnisette::new(&url)
+                        .map_err(|error| EngineError::Anisette(error.to_string()))?;
+                    let headers =
+                        provider.headers(None).await.map_err(|error| EngineError::Anisette(error.to_string()))?;
+
+                    Ok(headers.description())
+                }
+                AnisetteSetting::Local => {
+                    Err(EngineError::Unsupported("local anisette bridge is not implemented yet".into()))
+                }
             }
         })
     }
@@ -126,10 +169,15 @@ impl Engine {
     /// Current device list, then a fresh snapshot whenever it changes.
     pub fn subscribe_devices(&self) -> async_channel::Receiver<Vec<DeviceInfo>> {
         let (tx, rx) = async_channel::unbounded();
+
         if let Some(d) = &self.inner.demo {
             let _ = tx.try_send(d.devices());
         }
-        std::mem::forget(tx); // real implementation keeps the sender in the device watcher
+
+        let mut subscribers = self.inner.device_subscribers.lock();
+        subscribers.retain(|sender| !sender.is_closed());
+        subscribers.push(tx);
+
         rx
     }
 
@@ -138,37 +186,23 @@ impl Engine {
         self.run(async move { demo.map(|d| d.devices()).ok_or_else(not_yet) })
     }
 
-    pub fn device_apps(
-        &self,
-        udid: String,
-    ) -> impl Future<Output = Result<Vec<DeviceApp>>> + use<> {
+    pub fn device_apps(&self, udid: String) -> impl Future<Output = Result<Vec<DeviceApp>>> + use<> {
         let demo = self.inner.demo.clone();
         self.run(async move { demo.map(|d| d.device_apps(&udid)).ok_or_else(not_yet) })
     }
 
-    pub fn uninstall_app(
-        &self,
-        udid: String,
-        bundle_id: String,
-    ) -> impl Future<Output = Result<()>> + use<> {
+    pub fn uninstall_app(&self, udid: String, bundle_id: String) -> impl Future<Output = Result<()>> + use<> {
         let _ = (udid, bundle_id);
         let demo = self.inner.demo.clone();
         self.run(async move { demo.map(|_| ()).ok_or_else(not_yet) })
     }
 
-    pub fn device_profiles(
-        &self,
-        udid: String,
-    ) -> impl Future<Output = Result<Vec<DeviceProfile>>> + use<> {
+    pub fn device_profiles(&self, udid: String) -> impl Future<Output = Result<Vec<DeviceProfile>>> + use<> {
         let demo = self.inner.demo.clone();
         self.run(async move { demo.map(|d| d.device_profiles(&udid)).ok_or_else(not_yet) })
     }
 
-    pub fn remove_profile(
-        &self,
-        udid: String,
-        uuid: String,
-    ) -> impl Future<Output = Result<()>> + use<> {
+    pub fn remove_profile(&self, udid: String, uuid: String) -> impl Future<Output = Result<()>> + use<> {
         let _ = (udid, uuid);
         let demo = self.inner.demo.clone();
         self.run(async move { demo.map(|_| ()).ok_or_else(not_yet) })
@@ -185,39 +219,55 @@ impl Engine {
     // Accounts
 
     pub fn accounts(&self) -> Result<Vec<AccountSummary>> {
-        self.inner
-            .demo
-            .as_ref()
-            .map(|d| d.accounts())
-            .ok_or_else(not_yet)
+        if let Some(demo) = &self.inner.demo {
+            return Ok(demo.accounts());
+        }
+
+        let accounts = self.inner.accounts.lock();
+        let summaries = accounts
+            .values()
+            .map(|account| {
+                let mut summary = account.summary.clone();
+                summary.has_session = !account.session.token().is_empty();
+
+                summary
+            })
+            .collect();
+
+        Ok(summaries)
     }
 
     /// Sign in (prompts for the password when `password` is `None`, and for 2FA codes as needed).
-    pub fn login(
-        &self,
-        apple_id: String,
-        password: Option<String>,
-        remember: bool,
-    ) -> JobHandle<AccountSummary> {
+    pub fn login(&self, apple_id: String, password: Option<String>, remember: bool) -> JobHandle<AccountSummary> {
         let demo = self.inner.demo.clone();
+        let inner = self.inner.clone();
+
         self.job(move |ctx| async move {
             match demo {
                 Some(d) => d.login(ctx, apple_id, password, remember).await,
-                None => Err(not_yet()),
+                None => auth::login(inner, ctx, apple_id, password, remember).await,
             }
         })
     }
 
     pub fn logout(&self, apple_id: String) -> impl Future<Output = Result<()>> + use<> {
         let demo = self.inner.demo.clone();
-        self.run(async move { demo.map(|d| d.logout(&apple_id)).ok_or_else(not_yet) })
+        let inner = self.inner.clone();
+
+        self.run(async move {
+            if let Some(demo) = demo {
+                demo.logout(&apple_id);
+            } else {
+                inner.accounts.lock().remove(&apple_id);
+            }
+
+            Ok(())
+        })
     }
 
     pub fn certificates(&self, apple_id: String) -> JobHandle<Vec<CertificateSummary>> {
         let demo = self.inner.demo.clone();
-        self.job(
-            move |_ctx| async move { demo.map(|d| d.certificates(&apple_id)).ok_or_else(not_yet) },
-        )
+        self.job(move |_ctx| async move { demo.map(|d| d.certificates(&apple_id)).ok_or_else(not_yet) })
     }
 
     pub fn revoke_certificate(&self, apple_id: String, serial: String) -> JobHandle<()> {
@@ -240,7 +290,26 @@ impl Engine {
         self.run(async move {
             match demo {
                 Some(d) => Ok(d.inspect(path)),
-                None => Err(not_yet()),
+                None => tokio::task::spawn_blocking(move || crate::pipeline::inspect(path, None))
+                    .await
+                    .map_err(|error| EngineError::Other(format!("inspection worker failed: {error}")))?,
+            }
+        })
+    }
+
+    /// Cancellable metadata inspection for interactive front ends.
+    pub fn inspect_job(&self, path: PathBuf) -> JobHandle<AppSummary> {
+        let demo = self.inner.demo.clone();
+
+        self.job(move |context| async move {
+            context.checkpoint()?;
+            context.stage(crate::Stage::Preparing);
+
+            match demo {
+                Some(demo) => Ok(demo.inspect(path)),
+                None => tokio::task::spawn_blocking(move || crate::pipeline::inspect(path, Some(&context)))
+                    .await
+                    .map_err(|error| EngineError::Other(format!("inspection worker failed: {error}")))?,
             }
         })
     }
@@ -251,7 +320,7 @@ impl Engine {
         self.job(move |ctx| async move {
             match demo {
                 Some(d) => d.run_job(ctx, spec).await,
-                None => Err(not_yet()),
+                None => crate::pipeline::run_export(ctx, spec).await,
             }
         })
     }
@@ -260,11 +329,7 @@ impl Engine {
     // Installations
 
     pub fn installations(&self) -> Result<Vec<Installation>> {
-        self.inner
-            .demo
-            .as_ref()
-            .map(|d| d.installations())
-            .ok_or_else(not_yet)
+        self.inner.demo.as_ref().map(|d| d.installations()).ok_or_else(not_yet)
     }
 
     pub fn set_auto_refresh(&self, installation_id: i64, enabled: bool) -> Result<()> {
@@ -301,7 +366,10 @@ impl Engine {
     /// Background refresh notifications.
     pub fn subscribe_refresh(&self) -> async_channel::Receiver<RefreshEvent> {
         let (tx, rx) = async_channel::unbounded();
-        std::mem::forget(tx);
+        let mut subscribers = self.inner.refresh_subscribers.lock();
+        subscribers.retain(|sender| !sender.is_closed());
+        subscribers.push(tx);
+
         rx
     }
 
@@ -314,9 +382,13 @@ impl Engine {
         F: Future<Output = Result<T>> + Send + 'static,
     {
         let (tx, rx) = oneshot::channel();
-        self.inner.runtime.spawn(async move {
+        let runtime = self.inner.runtime.clone();
+
+        self.inner.runtime.handle.spawn(async move {
+            let _runtime_lifetime = runtime;
             let _ = tx.send(fut.await);
         });
+
         async move { rx.await.unwrap_or(Err(EngineError::Cancelled)) }
     }
 
@@ -329,14 +401,16 @@ impl Engine {
         let id = self.inner.next_job.fetch_add(1, Ordering::Relaxed);
         let (ctx, events, cancel) = JobContext::channel();
         let (tx, rx) = oneshot::channel();
-        let token = cancel.clone();
-        self.inner.runtime.spawn(async move {
-            let result = tokio::select! {
-                r = f(ctx) => r,
-                _ = token.cancelled() => Err(EngineError::Cancelled),
-            };
+        let runtime = self.inner.runtime.clone();
+
+        self.inner.runtime.handle.spawn(async move {
+            let _runtime_lifetime = runtime;
+            // Workers cooperate with cancellation. Await their termination so a cancelled
+            // result cannot race a still-running worker that owns an output transaction.
+            let result = f(ctx).await;
             let _ = tx.send(result);
         });
+
         JobHandle::new(id, events, rx, cancel)
     }
 }

@@ -21,6 +21,7 @@ tempfile.workspace = true
 walkdir.workspace = true
 image.workspace = true
 regex.workspace = true
+unicode-normalization.workspace = true
 crc32fast = "1"
 
 [dev-dependencies]

@@ -19,6 +19,7 @@ base64.workspace = true
 hex.workspace = true
 reqwest.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 futures.workspace = true
 sha2.workspace = true
 hmac.workspace = true
@@ -28,12 +29,17 @@ cbc.workspace = true
 aes-gcm.workspace = true
 num-bigint.workspace = true
 rand.workspace = true
+crypto-bigint.workspace = true
+subtle.workspace = true
+zeroize.workspace = true
+quick-xml.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2.workspace = true
 objc2-foundation.workspace = true
 
 [dev-dependencies]
+flate2.workspace = true
 wiremock.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 

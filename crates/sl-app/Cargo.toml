@@ -8,17 +8,31 @@ license.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "Sideport"
+name = "SideportDesktop"
 path = "src/main.rs"
 
 [dependencies]
 sl-engine.workspace = true
-gpui-kit.workspace = true
+gpui.workspace = true
+gpui-component.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 futures.workspace = true
 chrono.workspace = true
+clap.workspace = true
+tokio-util.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+rfd = { version = "=0.17.2", default-features = false }
+
+[dev-dependencies]
+tempfile.workspace = true
+plist.workspace = true
+sl-bundle.workspace = true
+sl-macho.workspace = true
+gpui = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true
