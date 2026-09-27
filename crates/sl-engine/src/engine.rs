@@ -4,6 +4,7 @@
 //! returned future only awaits a oneshot, so gpui (or any executor) can drive it.
 
 mod auth;
+mod portal;
 
 use crate::demo::Demo;
 use crate::error::{EngineError, Result};
@@ -59,7 +60,7 @@ struct Inner {
 #[derive(Debug)]
 struct LiveAccount {
     summary: AccountSummary,
-    session: sl_apple::auth::AuthSession,
+    session: Arc<sl_apple::auth::AuthSession>,
 }
 
 #[derive(Debug)]
@@ -275,18 +276,38 @@ impl Engine {
 
     pub fn certificates(&self, apple_id: String) -> JobHandle<Vec<CertificateSummary>> {
         let demo = self.inner.demo.clone();
-        self.job(move |_ctx| async move { demo.map(|d| d.certificates(&apple_id)).ok_or_else(not_yet) })
+        let inner = self.inner.clone();
+
+        self.job(move |context| async move {
+            match demo {
+                Some(demo) => Ok(demo.certificates(&apple_id)),
+                None => portal::certificates(inner, context, apple_id).await,
+            }
+        })
     }
 
     pub fn revoke_certificate(&self, apple_id: String, serial: String) -> JobHandle<()> {
-        let _ = (apple_id, serial);
         let demo = self.inner.demo.clone();
-        self.job(move |_ctx| async move { demo.map(|_| ()).ok_or_else(not_yet) })
+        let inner = self.inner.clone();
+
+        self.job(move |context| async move {
+            match demo {
+                Some(_) => Ok(()),
+                None => portal::revoke_certificate(inner, context, apple_id, serial).await,
+            }
+        })
     }
 
     pub fn app_ids(&self, apple_id: String) -> JobHandle<Vec<AppIdSummary>> {
         let demo = self.inner.demo.clone();
-        self.job(move |_ctx| async move { demo.map(|d| d.app_ids(&apple_id)).ok_or_else(not_yet) })
+        let inner = self.inner.clone();
+
+        self.job(move |context| async move {
+            match demo {
+                Some(demo) => Ok(demo.app_ids(&apple_id)),
+                None => portal::app_ids(inner, context, apple_id).await,
+            }
+        })
     }
 
     // --------------------------------------------------------------------------------------------

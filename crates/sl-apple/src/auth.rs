@@ -72,14 +72,29 @@ impl fmt::Debug for AuthSession {
 }
 
 impl AuthSession {
+    /// Reconstruct a token obtained from a prior GSA exchange. This checks its shape only;
+    /// the developer service must still establish whether the token remains valid.
+    pub fn restore(
+        username: String,
+        dsid: Zeroizing<String>,
+        token: Zeroizing<String>,
+        using_alternate: bool,
+    ) -> Result<Self> {
+        let valid = |value: &str, maximum: usize| {
+            !value.is_empty() && value.len() <= maximum && !value.chars().any(char::is_control)
+        };
+
+        if !valid(&username, 1024) || !valid(&dsid, 128) || !valid(&token, 16_384) {
+            return Err(Error::Invalid("authentication session"));
+        }
+
+        Ok(Self { username, dsid, token, using_alternate })
+    }
+
     #[cfg(test)]
     pub(crate) fn fixture(username: &str, dsid: &str, token: &str) -> Self {
-        Self {
-            username: username.into(),
-            dsid: Zeroizing::new(dsid.into()),
-            token: Zeroizing::new(token.into()),
-            using_alternate: false,
-        }
+        Self::restore(username.into(), Zeroizing::new(dsid.into()), Zeroizing::new(token.into()), false)
+            .expect("valid fixture session")
     }
 
     pub fn username(&self) -> &str {
@@ -267,12 +282,9 @@ impl AuthClient {
         let tokens = wire::dict(&response.0)?;
         let token = data.decrypt_app_token(wire::data(tokens, "et")?)?;
 
-        Ok(Exchange::Complete(AuthSession {
-            username: username.into(),
-            dsid: Zeroizing::new(data.dsid().into()),
-            token,
-            using_alternate: false,
-        }))
+        let session = AuthSession::restore(username.into(), Zeroizing::new(data.dsid().into()), token, false)?;
+
+        Ok(Exchange::Complete(session))
     }
 }
 

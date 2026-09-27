@@ -1,8 +1,7 @@
 # Sideport
 
-Rust implementation of the Sideloadly behavior reconstructed in
-`../SIDELOADLY_DECONSTRUCTED.md`, `../notes/`, and `../reconstructed_python/`.
-The full rewrite is in progress. The requirement-by-requirement evidence is in
+Rust reimplementation of Sideloadly 0.60's client behavior, as recovered by reverse
+engineering. The full rewrite is in progress. The requirement-by-requirement evidence is in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 The current executable inspects IPA, flipped IPA, zipped-app, and app-directory inputs.
@@ -18,6 +17,8 @@ remote anisette provider, and a GSA client with trusted-device/SMS verification.
 HTTP fixtures cover the GSA operation sequence and retry behavior. A typed developer portal
 client covers core team, device, app-ID, certificate and profile actions. The non-demo engine
 login job uses remote anisette, attempts team enumeration, and retains its session in memory.
+Account jobs now list certificates and app IDs and handle explicit certificate revocation for a
+selected team.
 Password persistence, account UI/CLI, provisioning, physical-device installation, and the other
 ledger workflows remain open.
 Engine/CLI anisette checks use the real transport; see

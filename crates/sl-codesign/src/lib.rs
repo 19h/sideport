@@ -5,7 +5,7 @@
 //! signature carrying Apple's CDHash attributes. It also builds `_CodeSignature/CodeResources` seals and
 //! decodes provisioning profiles.
 //!
-//! The format follows `../../notes/CODESIGN_NOTES.md` (§2–§8) and Apple's own `codesign` output.
+//! The format follows Sideloadly 0.60's recovered signer and Apple's own `codesign` output.
 //!
 //! # API contract
 //! Items marked "CONTRACT" are relied on by `sl-bundle` and `sl-engine`; keep their signatures stable.

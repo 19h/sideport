@@ -90,13 +90,13 @@ pub(super) async fn login(
         remembers_password: false,
         last_login: Some(Utc::now()),
     };
-    inner.accounts.lock().insert(apple_id, LiveAccount { summary: summary.clone(), session });
+    inner.accounts.lock().insert(apple_id, LiveAccount { summary: summary.clone(), session: Arc::new(session) });
     context.info("Apple ID authentication completed");
 
     Ok(summary)
 }
 
-fn team_summary(team: sl_apple::portal::TeamRecord) -> TeamSummary {
+pub(super) fn team_summary(team: sl_apple::portal::TeamRecord) -> TeamSummary {
     let kind = match team.kind {
         PortalTeamKind::Free => TeamKind::Free,
         PortalTeamKind::Individual => TeamKind::Individual,
@@ -107,7 +107,7 @@ fn team_summary(team: sl_apple::portal::TeamRecord) -> TeamSummary {
     TeamSummary { team_id: team.team_id, name: team.name, kind }
 }
 
-fn provider(setting: &AnisetteSetting) -> Result<Arc<dyn AnisetteProvider>> {
+pub(super) fn provider(setting: &AnisetteSetting) -> Result<Arc<dyn AnisetteProvider>> {
     match setting {
         AnisetteSetting::Remote { url } => {
             let remote = RemoteAnisette::new(url).map_err(|error| EngineError::Anisette(error.to_string()))?;

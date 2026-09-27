@@ -127,6 +127,13 @@ impl SigningIdentity {
     }
 }
 
+/// Read the subject common name without requiring the certificate's private key.
+pub fn certificate_common_name(certificate_der: &[u8]) -> Result<String> {
+    let certificate = Certificate::from_der(certificate_der).map_err(cert_error)?;
+
+    subject_string(&certificate, COMMON_NAME)
+}
+
 /// Generate a fresh RSA-2048 (e = 65537) signing key.
 pub fn generate_signing_key() -> Result<RsaPrivateKey> {
     RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).map_err(|error| Error::Key(error.to_string()))

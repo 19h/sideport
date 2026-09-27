@@ -5,7 +5,7 @@ use der::{Decode, DecodePem, Encode};
 use rsa::traits::PublicKeyParts;
 use sha2::{Digest, Sha256};
 use signature::Verifier;
-use sl_codesign::{SigningIdentity, build_csr_pem, cms, generate_signing_key};
+use sl_codesign::{SigningIdentity, build_csr_pem, cms, generate_signing_key, identity::certificate_common_name};
 
 #[test]
 fn csr_is_signed_correctly_and_subject_metacharacters_are_literal() {
@@ -35,6 +35,8 @@ fn identity_matches_key_and_redacts_private_components() {
     assert_eq!(identity.team_id(), "TEAM123456");
     assert_eq!(identity.serial_hex(), "2A");
     assert!(identity.expires() > chrono::Utc::now());
+    assert_eq!(certificate_common_name(identity.certificate_der()).expect("subject CN"), identity.common_name());
+    assert!(certificate_common_name(b"invalid DER").is_err());
 
     let debug = format!("{identity:?}");
 

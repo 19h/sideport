@@ -24,10 +24,10 @@ The recovered child-property and localization comparisons are preserved explicit
 Malformed main bundle code fails the job. Loose-code failures are returned in SignReport
 rather than disappearing in a log.
 
-Frameworks inherit entitlements, as confirmed by reconstructed_python/isign_signable.py and
-isign_bundle.py. Extension executables retain CS_EXECSEG_MAIN_BINARY: the native fixture
+Frameworks inherit entitlements, matching the recovered `isign.signable` and `isign.bundle`
+modules. Extension executables retain CS_EXECSEG_MAIN_BINARY: the native fixture
 independently confirms that Apple's signer sets it for the same MH_EXECUTE extension.
-This differs from the reconstructed Appex class's missing is_main_binary declaration.
+This differs from the recovered Appex class, which lacks an is_main_binary declaration.
 
 ## Output and format sources
 
@@ -50,7 +50,7 @@ The legacy container syntax is described by
 ## Verification
 
 The current three-crate suite has 54 tests: 24 bundle tests, 20 code-signing tests and
-10 Mach-O tests. The five-crate suite including engine/CLI has 68 tests. Tests generate
+10 Mach-O tests. The five-crate suite including engine/CLI has 78 tests. Tests generate
 their own apps, archives and certificates.
 
 - Rust zip, Python zipfile and Info-ZIP accept identical forward-only output, including forced ZIP64.

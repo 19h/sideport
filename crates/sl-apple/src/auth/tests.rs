@@ -13,6 +13,27 @@ use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 const USERNAME: &str = "fixture@example.test";
 const PASSWORD: &str = "test password";
 
+#[test]
+fn restored_session_validates_fields_without_exposing_the_token() {
+    let dsid = Zeroizing::new("123456789".into());
+    let token = Zeroizing::new("private-fixture-token".into());
+    let session = AuthSession::restore(USERNAME.into(), dsid, token, true).expect("restored session");
+
+    assert_eq!(session.username(), USERNAME);
+    assert!(session.using_alternate());
+    assert!(!format!("{session:?}").contains("private-fixture-token"));
+
+    let invalid = AuthSession::restore(
+        USERNAME.into(),
+        Zeroizing::new("123456789".into()),
+        Zeroizing::new("bad\r\ntoken".into()),
+        false,
+    );
+
+    assert!(matches!(&invalid, Err(Error::Invalid("authentication session"))));
+    assert!(!invalid.expect_err("invalid token").to_string().contains("bad"));
+}
+
 #[derive(Debug)]
 struct FixedProvider {
     name: &'static str,
