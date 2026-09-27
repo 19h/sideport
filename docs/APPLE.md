@@ -16,6 +16,7 @@ Live Apple authentication and the current availability of the recovered services
 | Trusted-device/SMS 2FA, repair/security-upgrade handling | Client prompts through `FactorDelegate`; trusted-device/SMS transport, code validation, bounded retry and one login restart are exercised against a mock server; repair/upgrade return typed errors; engine prompt bridge | Live parity for uncertain recovered branches, desktop account controls and account verification |
 | Legacy IDMS, session migration/persistence | Engine holds successful GSA sessions in memory; legacy IDMS and session migration are not implemented | Legacy client, keychain/storage, portal validity and migration implementation |
 | Portal teams/devices/certificates/app IDs/profiles and free/paid/tvOS policy | Typed QH65B2 client for listing/creating devices and app IDs, listing/submitting/revoking development certificates, and downloading profiles; mock-server paths, headers, schema, tvOS and limits; engine enumerates teams, lists certificates and app IDs, and handles explicit certificate revocation | Live portal compatibility, certificate/profile/device provisioning policy, remaining actions and UI integration |
+| Provisioning profile field validation and CMS trust | `ProvisioningProfile::validate_for` checks decoded dates, team, prefix, App ID, platform, certificate and device; `verify_trust` checks the CMS signature, chain and signer policy against configured anchors; bundle signing preflights every embedded profile before mutation | Engine Apple ID integration, portal-downloaded profile fixtures and physical-device acceptance |
 | Store/FairPlay/kbsync and private services | Not implemented | Client implementations, controlled fixtures and authorized live verification |
 
 `AuthClient::login` accepts remote anisette providers and a factor delegate. Its HTTP fixtures
@@ -81,6 +82,50 @@ fallback. `is_ours` remains false until signing-key persistence and public-key m
 Explicit revocation first checks that the serial occurs in the selected team's certificate list.
 No device or app-ID creation occurs automatically. A portal failure after GSA does not discard
 the authenticated in-memory token, so account state and team state remain distinguishable.
+
+## Provisioning profile contract
+
+Profile decoding, field validation and trust are three separate operations. `parse` decodes the
+CMS content without verifying it. `validate_for` compares decoded fields with a `ProfileTarget`:
+
+1. The target time t satisfies `CreationDate <= t < ExpirationDate`.
+2. The selected Team ID occurs in `TeamIdentifier`; a present
+   `com.apple.developer.team-identifier` entitlement must equal it.
+3. `application-identifier` is `PREFIX.PATTERN` with both parts nonempty. A listed
+   `ApplicationIdentifierPrefix` may differ from the Team ID, as legacy prefixes can
+   ([TN2318](https://developer.apple.com/library/archive/technotes/tn2318/)). When the list is
+   absent, only `PREFIX == Team ID` is accepted, because no other association is recorded.
+4. An explicit pattern equals the bundle ID. A wildcard pattern ends with one asterisk that
+   matches a nonempty suffix: `com.example.*` covers `com.example.app`, not `com.example`,
+   and `*` covers any identifier. Interior asterisks and bundle IDs containing `*` never match.
+   Wildcard IDs follow Apple's
+   [registration guidance](https://developer.apple.com/help/account/identifiers/register-an-app-id).
+5. When the target names a platform and the profile lists `Platform`, the platform must occur
+   exactly (`iOS`, `tvOS`, `xrOS`). Profiles without the field are not platform-checked.
+6. The signing certificate's DER bytes occur in `DeveloperCertificates`.
+7. A target UDID is compared after the recovered `Impactor._format_udid` normalization:
+   casefold and remove hyphens. It must be nonempty hexadecimal after normalization.
+   `ProvisionsAllDevices=true` accepts any well-formed UDID; otherwise the UDID must occur in
+   `ProvisionedDevices`.
+
+`verify_trust` requires one RFC 5652 SignerInfo whose certificate is embedded in the CMS, a
+SHA-1/256/384/512 digest, RSA PKCS#1 v1.5 and, when signed attributes are present, exactly one
+`contentType=data` and one matching `messageDigest`. The signature covers the DER SET OF signed
+attributes (RFC 5652 §5.4). The chain must be exactly leaf → embedded issuer → configured anchor.
+The Apple policy requires leaf CN `Apple iPhone OS Provisioning Profile Signing`, issuer CN
+`Apple iPhone Certification Authority` with `cA=true`, no key usage that excludes digital
+signatures, and the bundled Apple Root CA as anchor. The embedded root is not trusted. Each
+certificate must be valid at the signed profile's `CreationDate`, the time of signing, because
+older Apple signer certificates expire while their archived profiles remain decodable. SHA-1 is
+accepted because inspected Apple profiles use it for the CMS digest. Tests may configure other
+anchors and names through `ProfileTrust::from_pem`.
+
+Identity signing requires the main app's profile. `sl-bundle` recursively applies
+`validate_for` and, if `ProfileRequirements::trust` is set, `verify_trust` to every profile it
+would embed, with each bundle's own identifier, before any file changes. Following the recovered
+`isign` behavior, a child without its own `profiles` entry inherits the parent entitlements and
+embeds no profile. `ProfileRequirements::device_udid` carries the install target once engine
+device installation exists; export jobs leave it unset.
 
 ## Limits, cancellation and memory
 
@@ -164,6 +209,18 @@ mapping, absent failed-account state, explicit refusal of password persistence, 
 portal views, team choice, revocation serial checks and logout during a pending prompt. The CLI test
 invokes the actual executable against the controlled HTTP server.
 
+Fifteen profile-field tests cover validity boundaries, listed and absent prefixes, exact and
+wildcard App IDs, malformed application identifiers, team entitlements, certificate bytes,
+platforms, UDID case/hyphen variants and `ProvisionsAllDevices`. Six CMS trust tests generate a
+root, intermediate and signer, and verify SHA-1/SHA-256 acceptance plus rejection of payload
+tampering, signature tampering, absent signer/intermediate, a same-name foreign root, name
+policy, expired signer and non-CA issuer. Three bundle tests verify nested preflight order and
+per-bundle embedding. On 2026-09-28 an ignored local probe (`SIDEPORT_REAL_PROFILE`) accepted
+three Xcode-managed Apple profiles from this machine (2020 iOS, 2020 tvOS and 2026 iOS) against
+the bundled Apple Root CA, validated their decoded fields against their own team, certificate,
+wildcard stem and every listed 25/40-character UDID, and rejected a one-byte payload change.
+Those profiles are user data and are not checked in; the probe does not establish installation.
+
 Eight checked-in vectors are generated with PySRP 1.0.22 and PyCryptodome 3.23.0 under
 Python 3.14.7. They include `s2k`, `s2k_fo`, A=2, a short shared-secret encoding, leading-zero
 salt, UTF-8 credentials, an empty password and AES-128/192/256 token keys. Both independent
@@ -197,6 +254,13 @@ Primary sources:
   portal host and request format are not assumed equivalent to the recovered client.
 - Sideloadly 0.60's `isign.devapi` and `isign.anisette` modules, recovered by reverse
   engineering: the Apple client contract and uncertainty markers restated above.
+- [RFC 5652](https://www.rfc-editor.org/rfc/rfc5652.html), DOI 10.17487/RFC5652: SignedData,
+  signed-attribute encoding and message-digest verification.
+- [TN3125](https://developer.apple.com/documentation/technotes/tn3125-inside-code-signing-provisioning-profiles):
+  profile fields; [TN2318](https://developer.apple.com/library/archive/technotes/tn2318/): legacy
+  App ID prefixes.
+- Recovered `sideloadly.impact` (`_format_udid`, single main-app profile) and `isign.bundle`
+  (children inherit parent entitlements): UDID normalization and nested profile policy.
 
 ## Assumption register
 
@@ -248,6 +312,17 @@ Primary sources:
   controlled list/revoke race fixtures and authorized live status comparison. The two requests
   are not atomic; a service rejection must be reported with its `resultCode`.
 
+- A14: A profile whose CMS chains to Apple Root CA under the signer/issuer name policy is
+  Apple-issued, and chain validity at `CreationDate` is the relevant time. Dependent result:
+  profile authenticity at the signing boundary. Probe: generated tamper/name/validity fixtures and
+  real Apple profiles; compare with device acceptance. Revocation and Apple's full on-device
+  policy are not checked.
+- A15: Prefix, wildcard, platform and UDID rules predict the device's profile matching.
+  Dependent result: target preflight. Probe: listed legacy prefix, absent prefix, exact/wildcard
+  boundaries, mixed-case/hyphenated UDIDs, three real profiles; physical installation remains
+  required. Case-sensitive bundle-ID matching and the undotted trailing-asterisk rule are unverified
+  against a device.
+
 ## Bounded observations and quality gates
 
 - High impact: the missing colon or padded shared secret changes authentication outputs;
@@ -262,6 +337,8 @@ Primary sources:
 - High impact: certificate revocation is an external mutation. The engine requires an explicit
   revocation call and a matching serial in the chosen team's current list; in-flight requests
   can complete if logout races with dispatch.
+- High impact: decoded-field checks and trust checks are separate. Signing verifies trust only
+  when `ProfileRequirements::trust` is set; neither check proves device installation.
 - Medium impact: certificate ownership is unknown without a retained private key. The current
   list deliberately reports `is_ours=false` for every record.
 - Medium impact: QH65B2 may be unavailable or changed; fixed-action mock fixtures establish

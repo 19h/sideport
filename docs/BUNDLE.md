@@ -24,6 +24,13 @@ The recovered child-property and localization comparisons are preserved explicit
 Malformed main bundle code fails the job. Loose-code failures are returned in SignReport
 rather than disappearing in a log.
 
+Identity signing requires the main app's provisioning profile. Before any file changes, every
+profile that the pass would embed is validated against that bundle's own identifier and the
+signing certificate, plus the optional target UDID, platform and trust anchors in
+`ProfileRequirements`. A child without its own profile inherits the parent's entitlements and
+embeds nothing, as in the recovered `isign.bundle`. Profile failures return
+`Error::Profile` naming the bundle. docs/APPLE.md defines the profile rules.
+
 Frameworks inherit entitlements, matching the recovered `isign.signable` and `isign.bundle`
 modules. Extension executables retain CS_EXECSEG_MAIN_BINARY: the native fixture
 independently confirms that Apple's signer sets it for the same MH_EXECUTE extension.
@@ -49,9 +56,9 @@ The legacy container syntax is described by
 
 ## Verification
 
-The current three-crate suite has 54 tests: 24 bundle tests, 20 code-signing tests and
-10 Mach-O tests. The five-crate suite including engine/CLI has 78 tests. Tests generate
-their own apps, archives and certificates.
+The current three-crate suite has 76 tests: 27 bundle tests, 39 code-signing tests and
+10 Mach-O tests, plus one ignored real-profile probe. The five-crate suite including engine/CLI
+has 100 tests. Tests generate their own apps, archives, profiles and certificates.
 
 - Rust zip, Python zipfile and Info-ZIP accept identical forward-only output, including forced ZIP64.
 - CRC damage, duplicate entries, traversal, filesystem-name collisions, symlink ancestors,
@@ -65,6 +72,9 @@ their own apps, archives and certificates.
 - Nested resource tampering is rejected; stripped bundles can be signed and verified again.
 - Identity-signed frameworks/extensions carry inherited XML/DER entitlements and merged overrides.
   That fixture is self-signed and establishes encoding behavior, not Apple trust.
+- A mismatched child profile, absent or malformed device, wrong platform, untrusted profile or
+  expired profile fails before any bundle file changes; matching child profiles are embedded
+  per bundle and frameworks receive none.
 
 Commands:
 `cargo test -p sl-bundle -p sl-macho -p sl-codesign`

@@ -14,10 +14,10 @@ server implementations are unknown.
 
 | Requirement | Current evidence | Evidence still required |
 |---|---|---|
-| Thin/fat Mach-O parsing, commands, dual CodeDirectories, requirements, XML/DER entitlements, CMS, resource seals | Implemented in sl-macho/sl-codesign; 30 tests, Apple codesign and OpenSSL interoperability; forward header inspection | Real development identity/profile/device acceptance; broader malformed-format coverage |
+| Thin/fat Mach-O parsing, commands, dual CodeDirectories, requirements, XML/DER entitlements, CMS, resource seals, profile validation/trust | Implemented in sl-macho/sl-codesign; 49 tests, Apple codesign and OpenSSL interoperability; forward header inspection; profile field validation and CMS chain/policy verification with generated and local real-profile probes (docs/APPLE.md) | Real development identity/device acceptance; broader malformed-format coverage |
 | IPA, zipped-app and directory inputs; flipped IPA; filename portability; pruning; recursive metadata edits; replacements; icons | Implemented extraction, header/metadata inspection, flipped input, pruning, recursive metadata and replacements; PNG/CgBI inspection fixtures | Portable filename indirection, icon editing/asset handling; arbitrary Apple CgBI interoperability; additional platform verification |
 | Library/framework/resource injection; dependency/rpath rewrites; remote/special sources; ar and compressed deb packages | Local library/framework/resource copying and dependency/rpath rewriting implemented; native injected code executes | Remote/special source resolution and deb/ar/compression preparation |
-| Child-before-parent signing, provisioning, entitlement merging, unsigned/original/ad-hoc modes | Deep traversal, profiles and merged/inherited entitlements implemented; nested universal codesign verification; real engine/CLI original/unsigned/ad-hoc exports | Real Apple profiles/device acceptance; identity/provisioning engine integration |
+| Child-before-parent signing, provisioning, entitlement merging, unsigned/original/ad-hoc modes | Deep traversal, profiles and merged/inherited entitlements implemented; every embedded profile preflighted against its own bundle ID, optional device/platform/trust before mutation; nested universal codesign verification; real engine/CLI original/unsigned/ad-hoc exports | Real Apple profiles/device acceptance; identity/provisioning engine integration |
 | Deterministic IPA, forward streaming, atomic file and folder outputs | Forward-only deterministic ZIP/ZIP64 and atomic files verified by three readers; cancellation preserves existing output | Folder exports and resumable device upload integration |
 | Local AOSKit, Mail plugin notifications/kbsync, remote anisette and fallback policy | Real bounded remote provider, shared cache, engine/CLI checks; HTTP, cancellation, clock, decompression and validation tests; docs/APPLE.md | Native AOSKit/Mail bridge, fallback selection, private provider integration and live checks |
 | GSA SRP, legacy IDMS, app tokens, trusted-device/SMS 2FA, session migration/persistence | SRP/negotiation/CBC/GCM primitives and bounded GSA init/complete/apptokens transport; eight independent Python vectors; mock-server alternate-anisette, second-factor and cancellation tests; non-demo engine login/prompt bridge and memory-only session; docs/APPLE.md | Legacy IDMS, account UI/CLI, session migration/persistence and live account verification; uncertain second-factor branches require live parity checks |
@@ -63,6 +63,10 @@ must remain recoverable after failures.
 - A4: Input files remain stable while processed. Dependent results: parallel extraction and repeatable
   output. Probe: capture and compare source metadata, reject inconsistent entry sizes and CRCs,
   and test interrupted/mutated input.
+- A5: Profile field checks predict device matching, and Apple-root CMS verification establishes
+  profile authenticity at signing. Dependent results: identity-signing preflight. Probe: focused
+  boundary fixtures, generated tamper/policy chains and local real Apple profiles; device
+  installation remains the acceptance test. See docs/APPLE.md A14/A15.
 
 ## Bounded observations
 

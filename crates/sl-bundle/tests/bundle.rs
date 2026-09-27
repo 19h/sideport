@@ -2,7 +2,8 @@ mod common;
 
 use plist::{Dictionary, Value};
 use sl_bundle::{
-    ArchiveLimits, BundleArchive, Control, Injection, PatchOptions, PropertyEdit, Replacement, SigningRequest,
+    ArchiveLimits, BundleArchive, Control, Injection, PatchOptions, ProfileRequirements, PropertyEdit, Replacement,
+    SigningRequest,
 };
 use sl_codesign::Signer;
 use std::{collections::BTreeMap, fs, path::Path, sync::Arc};
@@ -147,8 +148,14 @@ fn deep_signing_and_stripping_cover_nested_bundles_and_loose_arm64_code() {
 
     let mut archive = unpack(&root);
     let signer = Signer::AdHoc;
-    let request =
-        SigningRequest { signer: Some(&signer), profile: None, profiles: None, entitlements: None, deep: true };
+    let request = SigningRequest {
+        signer: Some(&signer),
+        profile: None,
+        profiles: None,
+        entitlements: None,
+        deep: true,
+        requirements: ProfileRequirements::default(),
+    };
 
     let report = archive.sign(request, Control::default()).expect("sign");
 

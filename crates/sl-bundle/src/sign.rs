@@ -3,7 +3,7 @@ use crate::files;
 use crate::{Bundle, BundleArchive, BundleKind, Control, Error, Phase, Result};
 use plist::Dictionary;
 use rayon::prelude::*;
-use sl_codesign::{CodeKind, ProfileTarget, ProvisioningProfile, SignOptions, Signer};
+use sl_codesign::{CodeKind, ProfileTarget, ProfileTrust, ProvisioningProfile, SignOptions, Signer, SigningIdentity};
 use std::{
     collections::BTreeMap,
     fs,
@@ -21,6 +21,22 @@ pub struct SigningRequest<'a> {
     /// Merged over each profile's entitlements, matching alternate-entitlement semantics.
     pub entitlements: Option<&'a Dictionary>,
     pub deep: bool,
+    /// Target checks applied to every profile that identity signing will embed.
+    pub requirements: ProfileRequirements<'a>,
+}
+
+/// Target-specific checks for identity signing. Every embedded profile is checked against its
+/// own bundle identifier before the signing pass changes any file.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ProfileRequirements<'a> {
+    /// Device UDID that each embedded profile must provision.
+    pub device_udid: Option<&'a str>,
+    /// Profile `Platform` entry required for the target, such as iOS or tvOS.
+    pub platform: Option<&'a str>,
+    /// Verify each embedded profile's CMS signature and chain with these anchors.
+    pub trust: Option<&'a ProfileTrust>,
+    /// Validation time; `None` uses the current time.
+    pub now: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Debug)]
@@ -50,21 +66,14 @@ impl BundleArchive {
         control.check()?;
 
         let bundle = self.bundle()?;
-        let identifier = bundle.identifier()?;
-        let profile = request.profiles.and_then(|profiles| profiles.get(identifier)).or(request.profile);
 
         if let Some(Signer::Identity(identity)) = request.signer {
-            let profile = profile
-                .ok_or_else(|| Error::Bundle("identity signing requires the main app's provisioning profile".into()))?;
-            let target = ProfileTarget {
-                team_id: identity.team_id(),
-                bundle_id: identifier,
-                certificate_der: identity.certificate_der(),
-                device_udid: None,
-                now: chrono::Utc::now(),
-            };
+            if embedded_profile(&bundle, request)?.is_none() {
+                return Err(Error::Bundle("identity signing requires the main app's provisioning profile".into()));
+            }
 
-            profile.validate_for(target)?;
+            let now = request.requirements.now.unwrap_or_else(chrono::Utc::now);
+            preflight_profiles(&bundle, request, identity, now, control)?;
         }
 
         let inherited = request.profile.map(|profile| profile.entitlements.clone());
@@ -84,9 +93,7 @@ fn sign_bundle(
 ) -> Result<SignReport> {
     control.check()?;
 
-    let identifier = bundle.identifier()?;
-    let app_profile = if bundle.kind() == BundleKind::App { request.profile } else { None };
-    let profile = request.profiles.and_then(|profiles| profiles.get(identifier)).or(app_profile);
+    let profile = embedded_profile(bundle, request)?;
     let mut entitlements = profile.map(|profile| profile.entitlements.clone()).or_else(|| inherited.cloned());
 
     if let Some(overrides) = request.entitlements {
@@ -173,6 +180,58 @@ fn sign_bundle(
     report.signed.push(executable);
 
     Ok(report)
+}
+
+/// The profile written to a bundle: its own entry in `profiles`, else the request profile for apps.
+fn embedded_profile<'a>(bundle: &Bundle, request: SigningRequest<'a>) -> Result<Option<&'a ProvisioningProfile>> {
+    let identifier = bundle.identifier()?;
+    let app_profile = if bundle.kind() == BundleKind::App { request.profile } else { None };
+
+    Ok(request.profiles.and_then(|profiles| profiles.get(identifier)).or(app_profile))
+}
+
+/// Check every profile the signing pass would embed, recursing like `sign_bundle`, before any
+/// file changes. Children without their own profile inherit entitlements and embed nothing.
+fn preflight_profiles(
+    bundle: &Bundle,
+    request: SigningRequest<'_>,
+    identity: &SigningIdentity,
+    now: chrono::DateTime<chrono::Utc>,
+    control: Control<'_>,
+) -> Result<()> {
+    control.check()?;
+
+    if let Some(profile) = embedded_profile(bundle, request)? {
+        let requirements = request.requirements;
+        let target = ProfileTarget {
+            team_id: identity.team_id(),
+            bundle_id: bundle.identifier()?,
+            certificate_der: identity.certificate_der(),
+            device_udid: requirements.device_udid,
+            platform: requirements.platform,
+            now,
+        };
+
+        profile.validate_for(target).map_err(|error| profile_error(bundle, error))?;
+
+        if let Some(trust) = requirements.trust {
+            profile.verify_trust(trust).map_err(|error| profile_error(bundle, error))?;
+        }
+    }
+
+    if request.deep {
+        for child in bundle.signing_children()? {
+            preflight_profiles(&child, request, identity, now, control)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn profile_error(bundle: &Bundle, source: sl_codesign::Error) -> Error {
+    let name = bundle.root().file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+
+    Error::Profile { bundle: name, source }
 }
 
 fn sign_loose(

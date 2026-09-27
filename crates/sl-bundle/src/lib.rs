@@ -25,4 +25,4 @@ pub use model::{Bundle, BundleKind};
 pub use pack::{OutputLayout, PackOptions};
 pub use patch::{InfoEdits, PatchOptions, PatchReport, PropertyEdit, Replacement};
 pub use plists::{parse_dictionary, read_dictionary};
-pub use sign::{SignReport, SigningRequest, SkippedBinary};
+pub use sign::{ProfileRequirements, SignReport, SigningRequest, SkippedBinary};

@@ -6329,6 +6329,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "crc32fast",
+ "der",
  "flate2",
  "image",
  "memmap2",
@@ -6336,13 +6337,17 @@ dependencies = [
  "proptest",
  "rayon",
  "regex",
+ "rsa",
+ "sha2 0.10.9",
  "sl-codesign",
  "sl-macho",
+ "spki",
  "tempfile",
  "thiserror 2.0.21",
  "tracing",
  "unicode-normalization",
  "walkdir",
+ "x509-cert",
  "zip",
 ]
 

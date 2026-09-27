@@ -34,6 +34,14 @@ pub enum Error {
     #[error(transparent)]
     Codesign(#[from] sl_codesign::Error),
 
+    /// A profile that identity signing would embed does not satisfy the target.
+    #[error("{bundle}: {source}")]
+    Profile {
+        bundle: String,
+        #[source]
+        source: sl_codesign::Error,
+    },
+
     #[error(transparent)]
     MachO(#[from] sl_macho::Error),
 }

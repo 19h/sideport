@@ -87,8 +87,8 @@ UI.md records its implementation, primary sources, and rendered evidence.
 
 ## Verification and assumptions
 
-The five-crate suite currently has 78 tests: sl-bundle 24, sl-codesign 20, sl-macho 10,
-sl-engine 19, and sl-cli 5. The engine authentication/portal and CLI anisette tests are
+The five-crate suite currently has 100 tests: sl-bundle 27, sl-codesign 39, sl-macho 10,
+sl-engine 19, and sl-cli 5. The full workspace also runs sl-apple 33 and sl-app 8, for 141. The engine authentication/portal and CLI anisette tests are
 described in APPLE.md. Native generated universal code is exported through the real engine,
 accepted by Apple's codesign with strict/deep/all-architecture verification, and executes.
 Info.plist tampering is rejected. CLI subprocess tests cover metadata/export JSON and SIGINT

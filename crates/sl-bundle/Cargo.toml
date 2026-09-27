@@ -27,6 +27,11 @@ crc32fast = "1"
 
 [dev-dependencies]
 proptest.workspace = true
+rsa.workspace = true
+sha2.workspace = true
+spki.workspace = true
+der.workspace = true
+x509-cert.workspace = true
 
 [lints]
 workspace = true

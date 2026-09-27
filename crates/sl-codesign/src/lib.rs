@@ -26,8 +26,8 @@ pub mod trust;
 pub use error::{Error, Result};
 pub use identity::{SigningIdentity, build_csr_pem, generate_signing_key};
 pub use profile::{ProfileTarget, ProvisioningProfile};
-pub use trust::ProfileTrust;
 pub use sl_macho as macho;
+pub use trust::ProfileTrust;
 
 use std::sync::Arc;
 

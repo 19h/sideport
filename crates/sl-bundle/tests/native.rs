@@ -2,7 +2,9 @@
 
 mod common;
 
-use sl_bundle::{ArchiveLimits, BundleArchive, Control, Injection, OutputLayout, PackOptions, SigningRequest};
+use sl_bundle::{
+    ArchiveLimits, BundleArchive, Control, Injection, OutputLayout, PackOptions, ProfileRequirements, SigningRequest,
+};
 use sl_codesign::{ProvisioningProfile, Signer, SigningIdentity, blob};
 use std::{fs, path::Path, process::Command, sync::Arc};
 
@@ -53,8 +55,14 @@ fn apple_codesign_verifies_nested_universal_bundles_and_injected_code_executes()
     archive.inject(&[Injection { source: library, name: None }], Control::default()).expect("inject");
 
     let signer = Signer::AdHoc;
-    let request =
-        SigningRequest { signer: Some(&signer), profile: None, profiles: None, entitlements: None, deep: true };
+    let request = SigningRequest {
+        signer: Some(&signer),
+        profile: None,
+        profiles: None,
+        entitlements: None,
+        deep: true,
+        requirements: ProfileRequirements::default(),
+    };
     let report = archive.sign(request, Control::default()).expect("sign");
 
     assert_eq!(report.signed.len(), 4);
@@ -150,6 +158,8 @@ fn identity_frameworks_and_extensions_inherit_and_merge_entitlements() {
         expiration_date: "2030-01-01T00:00:00Z".parse().expect("expiration"),
         time_to_live_days: None,
         local_provision: false,
+        platforms: vec!["iOS".into()],
+        provisions_all_devices: false,
         provisioned_devices: Vec::new(),
         developer_certificates: vec![match &signer {
             Signer::Identity(identity) => identity.certificate_der().to_vec(),
@@ -164,6 +174,7 @@ fn identity_frameworks_and_extensions_inherit_and_merge_entitlements() {
         profiles: None,
         entitlements: Some(&overrides),
         deep: true,
+        requirements: ProfileRequirements::default(),
     };
     let report = archive.sign(request, Control::default()).expect("identity sign");
 

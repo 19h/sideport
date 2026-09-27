@@ -4,8 +4,8 @@ use crate::{
 };
 use plist::Value;
 use sl_bundle::{
-    ArchiveLimits, BundleArchive, Control, Injection, OutputLayout, PackOptions, PatchOptions, PropertyEdit,
-    Replacement, SigningRequest,
+    ArchiveLimits, BundleArchive, Control, Injection, OutputLayout, PackOptions, PatchOptions, ProfileRequirements,
+    PropertyEdit, Replacement, SigningRequest,
 };
 use sl_codesign::Signer;
 use std::{
@@ -189,6 +189,7 @@ fn export(context: JobContext, spec: JobSpec, summary: AppSummary, path: PathBuf
                 profiles: None,
                 entitlements: None,
                 deep: true,
+                requirements: ProfileRequirements::default(),
             };
             let report = archive.sign(request, control).map_err(bundle_error)?;
 
@@ -354,7 +355,7 @@ fn bundle_error(error: sl_bundle::Error) -> EngineError {
     match error {
         sl_bundle::Error::Cancelled => EngineError::Cancelled,
         sl_bundle::Error::Io { .. } => EngineError::Storage(error.to_string()),
-        sl_bundle::Error::Codesign(_) => EngineError::Signing(error.to_string()),
+        sl_bundle::Error::Codesign(_) | sl_bundle::Error::Profile { .. } => EngineError::Signing(error.to_string()),
         _ => EngineError::InvalidApp(error.to_string()),
     }
 }
