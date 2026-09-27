@@ -3,8 +3,8 @@
 The objective is a complete Rust implementation of Sideloadly 0.60's client behavior, as
 recovered by reverse engineering, with a GPUI desktop interface. The recovered behavior is
 evidence for how that client worked, not proof that every recovered endpoint or operating-system
-integration still works. The reverse-engineering material is not part of this repository; these
-documents restate each recovered contract that the implementation relies on.
+integration still works. The reverse-engineering material is not part of this repository; the
+contracts implemented so far are captured in these documents, the source and its tests.
 
 No documented workflow is excluded from the objective. Private services require configurable
 endpoints and credentials, protocol fixtures, and an explicit live-verification status. Their

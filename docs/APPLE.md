@@ -52,11 +52,11 @@ Let H be SHA-256, `s` the original salt bytes, and `p` the UTF-8 password bytes:
    and additional unlock fields. The app-token checksum covers `apptokens`, DSID and
    `com.apple.gs.xcode.auth`. GCM authenticates `XYZ` as associated data and uses a 16-byte nonce.
 
-The recovered notes abbreviate x as `H(s || H(p))`, omitting the colon. The original PySRP
-`gen_x` retains it, and the constants recovered from the bundled `srp._pysrp` module also
-contain the colon literal. Fixtures
-exercise that interpretation directly. UTF-8 bytes are preserved; the library does not
-apply SASLprep or lowercase credentials. Account normalization belongs to orchestration.
+The abbreviated recovered formula `H(s || H(p))` omits the colon. The original PySRP `gen_x`
+retains it, and the constants recovered from the bundled `srp._pysrp` module also contain the
+colon literal. Fixtures exercise that interpretation directly. UTF-8 bytes are preserved; the
+library does not apply SASLprep or lowercase credentials. Account normalization belongs to
+orchestration.
 
 ## Developer portal byte contract
 
@@ -95,8 +95,9 @@ Connect timeout is 5 s; request timeout is 15 s. Failed responses do not populat
 Cache reuse requires the same user, wall-clock age in [0 s, 30 s), monotonic age below 30 s,
 the same 30 s bucket and a bucket offset below 27 s. The reconstructed comparison is uncertain
 and contradictory; the implemented rule follows the explicit same-bucket reading of its recovered
-constants (a 30 s window, a `% 30` bucket and a `< 27` guard). The clock is sampled after acquiring the shared refresh lock.
-A cancelled request releases that lock and does not publish a partial cache entry.
+constants: a 30 s window, a `% 30` bucket and a `< 27` guard. The clock is sampled after
+acquiring the shared refresh lock. A cancelled request releases that lock and does not publish
+a partial cache entry.
 
 PBKDF2 iterations are bounded to [1, 1,000,000], salt to [1, 1024] bytes, password to 4096
 UTF-8 bytes, and username to [1, 1024] bytes without NUL. The accepted server public value
