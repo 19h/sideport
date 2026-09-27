@@ -55,6 +55,8 @@ pub enum TeamKind {
     Free,
     Individual,
     Organization,
+    /// Team type returned by the portal but not classified by the recovered policy.
+    Other(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

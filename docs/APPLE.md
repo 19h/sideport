@@ -1,7 +1,7 @@
-# Apple authentication implementation evidence
+# Apple authentication and portal implementation evidence
 
 The complete objective remains the workflow ledger in [ARCHITECTURE.md](ARCHITECTURE.md).
-This document records the authentication client and its verification boundaries.
+This document records the authentication and portal clients and their verification boundaries.
 Live Apple authentication and the current availability of the recovered services are unknown.
 
 ## Requirement coverage
@@ -10,21 +10,22 @@ Live Apple authentication and the current availability of the recovered services
 |---|---|---|
 | Remote anisette GET, user hash, time refresh and caching | `sl-apple::anisette`; actual HTTP mock, query preservation, shared refresh, user change and clock/bucket tests | Authorized live provider verification; private provider/feature-token integration |
 | Local AOSKit, Mail/AltServer notification protocol and kbsync | Recovered native contracts retained in source notes | Native bridge, bounded IPC, fallback selection and native verification |
-| SHA-256 SRP, 2048-bit group, `s2k`/`s2k_fo`, M1/M2 | Consuming `SrpClient` → `SrpProof` → `VerifiedSession`; eight independent Python vectors; GSA init/complete/apptokens over bounded XML plist HTTP with cookie scoping | Authorized live GSA account verification and engine integration |
+| SHA-256 SRP, 2048-bit group, `s2k`/`s2k_fo`, M1/M2 | Consuming `SrpClient` → `SrpProof` → `VerifiedSession`; eight independent Python vectors; GSA init/complete/apptokens over bounded XML plist HTTP with cookie scoping; engine login job | Authorized live GSA account verification |
 | Negotiation proof, session-data CBC and app-token GCM | HMAC verification precedes CBC; strict PKCS#7; authenticated `XYZ` token envelope; independent CBC/GCM vectors and complete mock GSA exchanges | Token persistence and live service verification |
 | Alternate anisette retry on -36607 | Complete-operation mismatch switches providers once and restarts the exchange; mock server verifies selection and bound; engine settings accept an alternate remote provider | UI controls and live verification |
-| Trusted-device/SMS 2FA, repair/security-upgrade handling | Client prompts through `FactorDelegate`; trusted-device/SMS transport, code validation, bounded retry and one login restart are exercised against a mock server; repair/upgrade return typed errors | Live parity for uncertain recovered branches, engine/UI prompt wiring and account verification |
+| Trusted-device/SMS 2FA, repair/security-upgrade handling | Client prompts through `FactorDelegate`; trusted-device/SMS transport, code validation, bounded retry and one login restart are exercised against a mock server; repair/upgrade return typed errors; engine prompt bridge | Live parity for uncertain recovered branches, desktop account controls and account verification |
 | Legacy IDMS, session migration/persistence | Recovered endpoint/form/session contracts retained in notes; engine holds successful GSA sessions in memory | Legacy client, keychain/storage, portal validity and migration implementation |
-| Portal teams/devices/certificates/app IDs/profiles and free/paid/tvOS policy | Existing CSR/identity/profile primitives | Portal client, provisioning policy, engine and UI integration, live account/device verification |
+| Portal teams/devices/certificates/app IDs/profiles and free/paid/tvOS policy | Typed QH65B2 client for listing/creating devices and app IDs, listing/submitting/revoking development certificates, and downloading profiles; mock-server paths, headers, schema, tvOS and limits; engine attempts team enumeration after GSA | Live portal compatibility, certificate/profile/device provisioning policy, remaining actions and UI integration |
 | Store/FairPlay/kbsync and private services | Recovered contracts retained in report and notes | Client implementations, controlled fixtures and authorized live verification |
 
 `AuthClient::login` accepts remote anisette providers and a factor delegate. Its HTTP fixtures
 exercise request fields, cookies, proofs, factor paths and failure transitions; they do not
 establish acceptance by Apple's current servers. The non-demo `Engine::login` job now maps
 password/second-factor prompts into this client and holds completed sessions in memory. It
-requires remote anisette configuration, returns empty teams until portal enumeration, and
-rejects password-remember requests until secure storage is implemented. `Engine::test_anisette`
-runs the real provider on the engine's Tokio runtime.
+requires remote anisette configuration, attempts portal team enumeration after GSA, and leaves
+teams empty with a warning if that call fails. It rejects password-remember requests until
+secure storage is implemented. `Engine::test_anisette` runs the real provider on the engine's
+Tokio runtime.
 `sideport anisette --remote URL [--json]` reports its machine description. Neither interface
 prints the OTP headers. Desktop and CLI account controls remain to be integrated.
 
@@ -56,6 +57,25 @@ PySRP `gen_x` retains it; `consts/srp._pysrp.txt` also contains the colon litera
 exercise that interpretation directly. UTF-8 bytes are preserved; the library does not
 apply SASLprep or lowercase credentials. Account normalization belongs to orchestration.
 
+## Developer portal byte contract
+
+The recovered GSA portal session sends the DSID as `X-Apple-I-Identity-Id`, the Xcode app token
+as `X-Apple-GS-Token`, and `com.apple.gs.xcode.auth` as `X-Apple-App-Info`. Each call refreshes
+anisette headers and mirrors `X-Apple-Locale` to `X-Apple-I-Locale`. A POST to
+`/services/QH65B2/{action}.action?clientId=XABBG36SBA` carries an XML plist with `clientId`,
+`protocolVersion`, a UUID request ID and `userLocale`. System actions add `teamId` and
+`DTDK_Platform`, use the `ios/` path prefix even for tvOS, and add `subPlatform=tvOS` for tvOS.
+The client reads `resultCode` before parsing action-specific fields and reports only the code
+for service failures. It does not echo server response bodies or credentials.
+
+Typed responses validate team, device, app-ID and certificate fields. The engine classifies a
+team with `type=Company/Organization` as organization; otherwise one membership whose name
+contains `free` classifies as free. Unknown team types are retained as `Other` rather than
+silently treated as paid. A single team becomes the default; multiple teams remain unselected.
+The client exposes explicit add/revoke calls, while the engine does not invoke certificate
+revocation or device/app-ID creation automatically. A portal failure after GSA does not discard
+the authenticated in-memory token, so account state and team state remain distinguishable.
+
 ## Limits, cancellation and memory
 
 Remote responses are bounded to 64 KiB = 65,536 bytes after decompression. Each header name
@@ -77,8 +97,8 @@ UTF-8 bytes, and username to [1, 1024] bytes without NUL. The accepted server pu
 satisfies `0 < B < N` and is at most 256 bytes. These are explicit resource/range checks,
 not claims about every value a live Apple service might return.
 
-GSA and factor responses are bounded to 1 MiB = 1,048,576 bytes after decompression. Complete
-XML plists accept only Apple's canonical public DTD; decrypted plist fragments reject XML
+GSA, factor and portal responses are bounded to 1 MiB = 1,048,576 bytes after decompression.
+Complete XML plists accept only Apple's canonical public DTD; decrypted plist fragments reject XML
 declarations and DTDs. Both paths reject nesting deeper than 32 elements. GSA origin validation
 requires HTTPS, except loopback HTTP for controlled fixtures. The GSA client keeps a private
 cookie jar and refuses redirects. Five code submissions, three explicit SMS requests and one
@@ -113,14 +133,23 @@ completion. Network and delegate waits are cancellation-aware. With a maximum of
 switch and one factor restart, the client performs at most three SRP exchanges; each successful
 exchange uses three GSA requests. Factor requests add O(c + s) HTTP operations for code attempts
 c ≤ 5 and SMS requests s ≤ 3. The 1 MiB response bound applies to each response, not their sum.
+Portal record arrays contain at most 4096 elements; record identifiers must be unique within a
+response. Portal parsing and uniqueness checks cost O(m + r log r) time for response bytes m and
+records r ≤ 4096, with O(m + r) retained space before typed records are returned. Date fields
+accept plist dates or ISO 8601/RFC 3339 strings and are normalized to UTC; the recovered
+`never` expiration marker maps to no expiration. The portal client requires HTTPS except
+literal loopback HTTP fixtures. Redirects are refused.
 
 ## Verification and provenance
 
-Twenty-six `sl-apple` tests and the engine anisette/authentication tests cover independent vector parity, M2/negotiation/
-GCM tampering, strict CBC padding, malformed schema/XML, input limits, actual mock HTTP,
+Thirty-two `sl-apple` tests and the engine anisette/authentication tests cover independent vector
+parity, M2/negotiation/GCM tampering, strict CBC padding, malformed schema/XML, input limits,
+actual mock HTTP,
 decompression limits, cancellation, cache boundaries, concurrent refresh, query handling
 and redaction. Ten authentication client tests additionally cover the GSA wire contract,
 cookie jar, alternate provider, factor modes and bounds, cancellation, and proof rejection.
+Six portal tests cover the QH65B2 envelope, authenticated header precedence, fixed action paths,
+tvOS fields, typed responses, schema rejection, response limits and cancellation.
 The engine tests exercise a real password prompt, remote anisette transport, GSA service-error
 mapping, absent failed-account state and explicit refusal of password persistence. The CLI test
 invokes the actual executable against the controlled HTTP server.
@@ -153,6 +182,9 @@ Primary sources:
   fixed exponent-width modular operations used by this implementation.
 - [AltSign authentication client](https://github.com/rileytestut/AltSign/blob/master/AltSign/Apple%20API/ALTAppleAPI%2BAuthentication.m):
   independent client evidence for the GSA operation sequence, proof check and trusted-device verification.
+- [Fastlane Spaceship portal client](https://github.com/fastlane/fastlane/blob/master/spaceship/lib/spaceship/portal/portal_client.rb):
+  independent client evidence for QH65B2 team and Xcode provisioning action names. Its newer
+  portal host and request format are not assumed equivalent to the recovered client.
 - Local `notes/AUTH_NOTES.md`, report sections 4–6, reconstructed `isign_devapi.py` and
   `isign_anisette.py`: recovered Apple client contract and uncertainty markers.
 
@@ -160,7 +192,7 @@ Primary sources:
 
 - A1: The recovered fork shares upstream x/M1/M2 encoding. Dependent result: recovered-client
   interoperability. Probe: pinned independent peers, minimal encodings and leading-zero salt;
-  compare an authorized live GSA exchange when transport is implemented.
+  compare an authorized live GSA exchange.
 - A2: The explicit same-bucket cache description resolves the uncertain reconstructed expression.
   Dependent result: cache fidelity. Probe: request counts at 26/27/30 s, reversed clocks, user
   changes and live OTP acceptance. Exact original cache control flow remains unproven.
@@ -185,6 +217,13 @@ Primary sources:
   portal access or survive process restart. Dependent result: the engine account summary and
   future provisioning. Probe: test login/logout/session lifetime against a controlled service;
   enumerate teams and validate token acceptance before enabling portal actions.
+- A9: The recovered developerservices2 QH65B2 host, action paths, plist envelope and response
+  keys remain accepted. Dependent result: live team enumeration and provisioning. Probe: mock
+  byte-level requests and malformed responses; compare each operation with authorized live
+  traces. A mock success does not establish current Apple service acceptance.
+- A10: A 1 MiB response and 4096-record cap cover practical portal data; `expirationDate`
+  uses plist date or RFC 3339 text. Dependent result: larger-account interoperability and quota
+  calculations. Probe: authorized response sizes, date variants and records at the limits.
 
 ## Bounded observations and quality gates
 
@@ -194,6 +233,10 @@ Primary sources:
   portal session expiry and durable account state remain unimplemented.
 - High impact: an engine session is memory-only and cannot support unattended refresh;
   password-remember requests fail explicitly until keychain storage exists.
+- High impact: a portal error after GSA leaves a session with no enumerated teams. The engine
+  reports the portal failure separately; signing must require a selected, verified team.
+- Medium impact: QH65B2 may be unavailable or changed; fixed-action mock fixtures establish
+  client encoding and parsing only, while live service compatibility is unknown.
 - High impact: two recovered second-factor branches are ambiguous. Mock fixtures establish the
   chosen behavior, while current live parity remains unknown.
 - Medium impact: cancellation and concurrent refresh can otherwise preserve stale OTP state;

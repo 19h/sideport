@@ -1,10 +1,11 @@
 use super::{AnisetteProvider, AuthClient, cancellable};
 use crate::anisette::AnisetteHeaders;
+use crate::transport::{base_headers, insert_header};
 use crate::wire::{self, SecretValue, dictionary};
 use crate::{Error, Result, transport};
 use chrono::Utc;
 use plist::{Dictionary, Value};
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use reqwest::header::HeaderMap;
 use reqwest::{Method, RequestBuilder, Url};
 use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
@@ -73,7 +74,7 @@ impl AuthClient {
         let mut headers = base_headers("text/x-xml-plist")?;
 
         for name in ["X-MMe-Client-Info", "X-Apple-I-MD-M", "X-Mme-Device-Id"] {
-            insert(&mut headers, name, required(&anisette, name)?)?;
+            insert_header(&mut headers, name, required(&anisette, name)?)?;
         }
 
         let endpoint = self.endpoint("grandslam/GsService2")?;
@@ -120,26 +121,6 @@ impl AuthClient {
     pub(super) fn factor_request(&self, method: Method, path: &str, headers: HeaderMap) -> Result<RequestBuilder> {
         Ok(self.client.request(method, self.endpoint(path)?).headers(headers))
     }
-}
-
-pub(super) fn base_headers(content_type: &str) -> Result<HeaderMap> {
-    let mut headers = HeaderMap::new();
-    insert(&mut headers, "User-Agent", "Xcode")?;
-    insert(&mut headers, "X-Xcode-Version", "11.2 (11B52)")?;
-    insert(&mut headers, "Accept-Language", "en-us")?;
-    insert(&mut headers, "Accept", "text/x-xml-plist")?;
-    insert(&mut headers, "Content-Type", content_type)?;
-
-    Ok(headers)
-}
-
-pub(super) fn insert(headers: &mut HeaderMap, name: &str, value: &str) -> Result<()> {
-    let name = HeaderName::from_bytes(name.as_bytes()).map_err(|_| Error::Invalid("request header name"))?;
-    let mut value = HeaderValue::from_str(value).map_err(|_| Error::Invalid("request header value"))?;
-    value.set_sensitive(true);
-    headers.insert(name, value);
-
-    Ok(())
 }
 
 pub(super) fn required<'a>(headers: &'a AnisetteHeaders, name: &str) -> Result<&'a str> {

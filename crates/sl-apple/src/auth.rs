@@ -9,8 +9,8 @@ use crate::anisette::{AnisetteHeaders, RemoteAnisette};
 use crate::srp::{Challenge, Continuation, PasswordProtocol, SessionData, SrpClient, XCODE_APP};
 use crate::wire::{self, SecretValue, dictionary};
 use crate::{Error, Result, transport};
+use futures::FutureExt;
 use futures::future::BoxFuture;
-use futures::{Future, FutureExt};
 use plist::Value;
 use reqwest::{Client, Url};
 use std::fmt;
@@ -18,6 +18,8 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
+
+pub(super) use crate::transport::{cancellable, checkpoint};
 
 pub trait AnisetteProvider: fmt::Debug + Send + Sync {
     fn headers<'a>(&'a self, username: &'a str) -> BoxFuture<'a, Result<AnisetteHeaders>>;
@@ -70,6 +72,16 @@ impl fmt::Debug for AuthSession {
 }
 
 impl AuthSession {
+    #[cfg(test)]
+    pub(crate) fn fixture(username: &str, dsid: &str, token: &str) -> Self {
+        Self {
+            username: username.into(),
+            dsid: Zeroizing::new(dsid.into()),
+            token: Zeroizing::new(token.into()),
+            using_alternate: false,
+        }
+    }
+
     pub fn username(&self) -> &str {
         &self.username
     }
@@ -115,7 +127,7 @@ impl AuthClient {
     pub fn with_origin(origin: &str) -> Result<Self> {
         let origin = Url::parse(origin).map_err(|_| Error::Invalid("authentication origin"))?;
         let host = origin.host_str().unwrap_or_default().trim_matches(['[', ']']);
-        let loopback = host == "localhost" || host.parse::<IpAddr>().is_ok_and(|address| address.is_loopback());
+        let loopback = host.parse::<IpAddr>().is_ok_and(|address| address.is_loopback());
         let permitted_scheme = origin.scheme() == "https" || origin.scheme() == "http" && loopback;
         let clean_origin = origin.path() == "/"
             && origin.query().is_none()
@@ -261,27 +273,6 @@ impl AuthClient {
             token,
             using_alternate: false,
         }))
-    }
-}
-
-pub(super) fn checkpoint(cancellation: &CancellationToken) -> Result<()> {
-    if cancellation.is_cancelled() { Err(Error::Cancelled) } else { Ok(()) }
-}
-
-pub(super) async fn cancellable<T>(
-    cancellation: &CancellationToken,
-    future: impl Future<Output = Result<T>>,
-) -> Result<T> {
-    checkpoint(cancellation)?;
-
-    tokio::select! {
-        biased;
-        _ = cancellation.cancelled() => Err(Error::Cancelled),
-        result = future => {
-            checkpoint(cancellation)?;
-
-            result
-        }
     }
 }
 

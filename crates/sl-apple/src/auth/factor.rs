@@ -1,6 +1,6 @@
-use super::request::{base_headers, insert};
 use super::{AnisetteProvider, AuthClient, cancellable};
 use crate::srp::{SessionData, XCODE_APP};
+use crate::transport::{base_headers, insert_header};
 use crate::wire::{self, SecretValue, dictionary};
 use crate::{Error, Result};
 use base64::Engine;
@@ -142,7 +142,7 @@ impl AuthClient {
         let mut headers = base_headers("text/x-xml-plist")?;
 
         for (name, value) in anisette.iter().filter(|(name, _)| *name != "loc") {
-            insert(&mut headers, name, value)?;
+            insert_header(&mut headers, name, value)?;
         }
 
         let identity = Zeroizing::new(format!("{}:{}", data.dsid(), data.idms_token()));
@@ -154,9 +154,9 @@ impl AuthClient {
                 .map_err(|_| Error::Invalid("identity token Latin-1 encoding"))?,
         );
         let encoded = Zeroizing::new(base64::engine::general_purpose::STANDARD.encode(&identity));
-        insert(&mut headers, "X-Apple-App-Info", XCODE_APP)?;
-        insert(&mut headers, "X-Apple-Client-App-Name", "Xcode")?;
-        insert(&mut headers, "X-Apple-Identity-Token", &encoded)?;
+        insert_header(&mut headers, "X-Apple-App-Info", XCODE_APP)?;
+        insert_header(&mut headers, "X-Apple-Client-App-Name", "Xcode")?;
+        insert_header(&mut headers, "X-Apple-Identity-Token", &encoded)?;
 
         Ok(headers)
     }
@@ -182,8 +182,8 @@ impl AuthClient {
         let body = SecretValue(body);
         let mut encoded = wire::encode(&body.0)?;
         let mut headers = headers.clone();
-        insert(&mut headers, "Content-Type", "application/x-plist")?;
-        insert(&mut headers, "Accept", "application/json")?;
+        insert_header(&mut headers, "Content-Type", "application/x-plist")?;
+        insert_header(&mut headers, "Accept", "application/json")?;
         let request = self.factor_request(Method::POST, path, headers)?.body(std::mem::take(&mut *encoded));
 
         self.factor_json(request, cancellation).await
@@ -197,7 +197,7 @@ impl AuthClient {
         cancellation: &CancellationToken,
     ) -> Result<()> {
         let mut headers = headers.clone();
-        insert(&mut headers, "security-code", code)?;
+        insert_header(&mut headers, "security-code", code)?;
         let method = if idms_data.is_some() { Method::POST } else { Method::GET };
         let mut request = self.factor_request(method, "grandslam/GsService2/validate", headers)?;
 

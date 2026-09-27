@@ -5,6 +5,7 @@
 pub mod anisette;
 pub mod auth;
 mod error;
+pub mod portal;
 pub mod srp;
 mod transport;
 mod wire;

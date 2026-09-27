@@ -111,7 +111,7 @@ pub enum PromptKind {
     WaitForDevice { udid: String, device_name: String, reason: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum PromptReply {
     Text {
         value: String,
@@ -124,6 +124,22 @@ pub enum PromptReply {
     RequestSms,
     DeviceReturned,
     Cancel,
+}
+
+impl std::fmt::Debug for PromptReply {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Text { remember, .. } => {
+                formatter.debug_struct("Text").field("value", &"[redacted]").field("remember", remember).finish()
+            }
+            Self::Choice(index) => formatter.debug_tuple("Choice").field(index).finish(),
+            Self::Confirmed(confirmed) => formatter.debug_tuple("Confirmed").field(confirmed).finish(),
+            Self::Path(path) => formatter.debug_tuple("Path").field(path).finish(),
+            Self::RequestSms => formatter.write_str("RequestSms"),
+            Self::DeviceReturned => formatter.write_str("DeviceReturned"),
+            Self::Cancel => formatter.write_str("Cancel"),
+        }
+    }
 }
 
 /// An interactive question. Answer exactly once; dropping it counts as [`PromptReply::Cancel`].

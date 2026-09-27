@@ -474,6 +474,7 @@ async fn cancellation_during_init_prevents_completion() {
 fn invalid_authentication_origins_are_rejected() {
     for origin in [
         "http://example.test",
+        "http://localhost",
         "https://user:secret@example.test",
         "https://example.test/path",
         "file:///tmp",

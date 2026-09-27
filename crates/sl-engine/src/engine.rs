@@ -30,6 +30,8 @@ pub struct EngineConfig {
     pub disable_scheduler: bool,
     /// Override the GSA origin for controlled service fixtures.
     pub auth_origin: Option<String>,
+    /// Override the developer-services origin for controlled service fixtures.
+    pub portal_origin: Option<String>,
 }
 
 /// Notifications from the background refresh scheduler.
@@ -46,6 +48,7 @@ struct Inner {
     data_dir: PathBuf,
     settings: RwLock<Settings>,
     auth_origin: String,
+    portal_origin: String,
     accounts: Mutex<BTreeMap<String, LiveAccount>>,
     demo: Option<Demo>,
     next_job: AtomicU64,
@@ -99,6 +102,10 @@ impl Engine {
         let settings = crate::settings::load(&data_dir)?;
         let auth_origin = config.auth_origin.unwrap_or_else(|| "https://gsa.apple.com".into());
         sl_apple::auth::AuthClient::with_origin(&auth_origin).map_err(|error| EngineError::Auth(error.to_string()))?;
+        let portal_origin =
+            config.portal_origin.unwrap_or_else(|| "https://developerservices2.apple.com/services/QH65B2/".into());
+        sl_apple::portal::PortalClient::with_origin(&portal_origin)
+            .map_err(|error| EngineError::Auth(error.to_string()))?;
 
         Ok(Self {
             inner: Arc::new(Inner {
@@ -106,6 +113,7 @@ impl Engine {
                 data_dir,
                 settings: RwLock::new(settings),
                 auth_origin,
+                portal_origin,
                 accounts: Mutex::new(BTreeMap::new()),
                 demo,
                 next_job: AtomicU64::new(1),
