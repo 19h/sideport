@@ -1,0 +1,31 @@
+[package]
+name = "sl-cli"
+description = "Sideport command-line interface"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "sideport"
+path = "src/main.rs"
+
+[dependencies]
+sl-engine.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+indicatif.workspace = true
+dialoguer.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+futures.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+assert_cmd.workspace = true
+predicates.workspace = true
+
+[lints]
+workspace = true

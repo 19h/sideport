@@ -1,0 +1,113 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
+
+[workspace.dependencies]
+# internal
+sl-macho = { path = "crates/sl-macho" }
+sl-codesign = { path = "crates/sl-codesign" }
+sl-bundle = { path = "crates/sl-bundle" }
+sl-apple = { path = "crates/sl-apple" }
+sl-device = { path = "crates/sl-device" }
+sl-engine = { path = "crates/sl-engine" }
+
+# errors / logging
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# data
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+plist = "1.8"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+base64 = "0.22"
+hex = "0.4"
+regex = "1"
+url = "2"
+bytes = "1"
+
+# fs / archives / perf
+zip = { version = "2", default-features = false, features = ["deflate"] }
+flate2 = "1"
+rayon = "1.10"
+memmap2 = "0.9"
+tempfile = "3"
+walkdir = "2"
+dirs = "6"
+image = { version = "0.25", default-features = false, features = ["png"] }
+parking_lot = "0.12"
+
+# async / net
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "net"] }
+tokio-util = "0.7"
+futures = "0.3"
+async-channel = "2"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json", "gzip", "http2"] }
+idevice = { version = "0.1.68", default-features = false, features = ["ring", "usbmuxd", "afc", "installation_proxy", "misagent", "notification_proxy", "pair", "syslog_relay"] }
+
+# crypto (RustCrypto, digest 0.10 generation — mutually compatible, all stable)
+rsa = { version = "0.9", features = ["sha2"] }
+sha1 = { version = "0.10", features = ["oid"] }
+sha2 = { version = "0.10", features = ["oid"] }
+hmac = "0.12"
+pbkdf2 = "0.12"
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc"] }
+aes-gcm = "0.10"
+num-bigint = "0.4"
+x509-cert = { version = "0.2.5", features = ["builder", "pem"] }
+cms = "0.2.3"
+der = { version = "0.7", features = ["alloc", "derive", "oid", "pem"] }
+spki = "0.7"
+pkcs1 = "0.7"
+pkcs8 = { version = "0.10", features = ["pem"] }
+const-oid = { version = "0.9", features = ["db"] }
+signature = "2"
+rand = "0.8"
+
+# storage
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# macOS
+objc2 = "0.6"
+objc2-foundation = "0.3"
+
+# cli / gui
+clap = { version = "4", features = ["derive", "env"] }
+indicatif = "0.18"
+dialoguer = "0.12"
+gpui-kit = "0.6.6"
+
+# testing
+proptest = "1"
+wiremock = "0.6"
+assert_cmd = "2"
+predicates = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
+
+[profile.dev.package."*"]
+opt-level = 2

@@ -1,0 +1,24 @@
+[package]
+name = "sl-app"
+description = "Sideport desktop app (gpui)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "Sideport"
+path = "src/main.rs"
+
+[dependencies]
+sl-engine.workspace = true
+gpui-kit.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+futures.workspace = true
+chrono.workspace = true
+
+[lints]
+workspace = true

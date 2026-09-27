@@ -1,0 +1,30 @@
+[package]
+name = "sl-bundle"
+description = "IPA/app-bundle handling: parallel unpack, patching, deep signing, deterministic repacking"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+sl-codesign.workspace = true
+sl-macho.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+plist.workspace = true
+zip.workspace = true
+flate2.workspace = true
+rayon.workspace = true
+memmap2.workspace = true
+tempfile.workspace = true
+walkdir.workspace = true
+image.workspace = true
+regex.workspace = true
+crc32fast = "1"
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true
