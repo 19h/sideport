@@ -13,7 +13,7 @@ mod settings;
 mod store;
 pub mod types;
 
-pub use engine::{Engine, EngineConfig, RefreshEvent};
+pub use engine::{DeviceBackend, Engine, EngineConfig, RefreshEvent};
 pub use error::{EngineError, Result};
 pub use job::{Fact, JobContext, JobEvent, JobHandle, LogLevel, Prompt, PromptKind, PromptReply, Stage, TeamChoice};
 pub use types::*;

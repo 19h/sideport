@@ -11,6 +11,7 @@ publish.workspace = true
 sl-bundle.workspace = true
 sl-codesign.workspace = true
 sl-apple.workspace = true
+sl-device.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 serde.workspace = true

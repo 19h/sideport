@@ -21,8 +21,10 @@ login job uses remote anisette, attempts team enumeration, and retains its sessi
 Sessions, remembered passwords and the signing key persist across restarts (keychain on macOS),
 and recovered Sideloadly `sessions.json` GSA sessions can be imported. The engine provisions
 Apple ID exports: team, certificate reuse or creation, App IDs and trust-verified profiles, then
-signs the IPA with the issued identity. Account UI/CLI, physical-device installation, and the
-other ledger workflows remain open.
+signs the IPA with the issued identity. The device layer discovers devices through usbmuxd and
+installs Apple ID, ad-hoc or original apps with the recovered resumable upload and retry policy,
+records installations and refreshes them on a schedule (docs/DEVICE.md). Account UI/CLI and
+physical-device acceptance remain open.
 Engine/CLI anisette checks use the real transport; see
 [docs/APPLE.md](docs/APPLE.md) for independent vectors and the remaining account workflows.
 

@@ -14,7 +14,7 @@ use std::fmt;
 use std::path::Path;
 use std::time::Duration;
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA: &str = "
     CREATE TABLE accounts (
@@ -57,6 +57,9 @@ const SCHEMA: &str = "
     );
 ";
 
+/// Version 2: refresh claims, so processes sharing a data directory run each refresh once.
+const MIGRATION_2: &str = "ALTER TABLE installations ADD COLUMN claimed_at INTEGER;";
+
 /// A development certificate issued for this machine's signing key within one team.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StoredCertificate {
@@ -65,7 +68,6 @@ pub(crate) struct StoredCertificate {
 }
 
 /// A queued refresh request, ordered by `enqueued_at`.
-#[cfg_attr(not(test), expect(dead_code, reason = "used by the refresh scheduler"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct QueuedRefresh {
     pub installation_id: i64,
@@ -103,18 +105,19 @@ impl Store {
 
         let version: i64 = transaction.pragma_query_value(None, "user_version", |row| row.get(0)).map_err(sql_error)?;
 
-        match version {
-            0 => {
-                transaction.execute_batch(SCHEMA).map_err(sql_error)?;
-                transaction.pragma_update(None, "user_version", SCHEMA_VERSION).map_err(sql_error)?;
-            }
-
-            SCHEMA_VERSION => {}
-
-            newer => {
-                return Err(EngineError::Storage(format!("state database schema {newer} is newer than this build")));
-            }
+        if version > SCHEMA_VERSION {
+            return Err(EngineError::Storage(format!("state database schema {version} is newer than this build")));
         }
+
+        if version < 1 {
+            transaction.execute_batch(SCHEMA).map_err(sql_error)?;
+        }
+
+        if version < 2 {
+            transaction.execute_batch(MIGRATION_2).map_err(sql_error)?;
+        }
+
+        transaction.pragma_update(None, "user_version", SCHEMA_VERSION).map_err(sql_error)?;
 
         transaction.commit().map_err(sql_error)
     }
@@ -283,7 +286,6 @@ impl Store {
 
     /// Insert or replace the installation of a bundle on a device, returning its stable id.
     /// Reinstalling the same bundle on the same device keeps the row and its auto-refresh choice.
-    #[cfg_attr(not(test), expect(dead_code, reason = "used by device installation jobs"))]
     pub(crate) fn record_installation(&self, installation: &Installation) -> Result<i64> {
         let (record, icon) = split_installation(installation)?;
         let expires_at = installation.expires_at.map(|time| time.timestamp());
@@ -383,13 +385,12 @@ impl Store {
     }
 
     /// Queue a refresh once; an installation already queued keeps its original position.
-    #[cfg_attr(not(test), expect(dead_code, reason = "used by the refresh scheduler and file cache"))]
     pub(crate) fn enqueue_refresh(&self, id: i64, token: &str, now: DateTime<Utc>) -> Result<bool> {
         let queued = self
             .connection
             .lock()
             .execute(
-                "UPDATE installations SET enqueued_at = ?2, enqueue_token = ?3
+                "UPDATE installations SET enqueued_at = ?2, enqueue_token = ?3, claimed_at = NULL
                  WHERE id = ?1 AND enqueued_at IS NULL",
                 params![id, now.timestamp(), token],
             )
@@ -399,7 +400,7 @@ impl Store {
     }
 
     /// The oldest queued refresh, matching the recovered `GetNextPendingInstallation` order.
-    #[cfg_attr(not(test), expect(dead_code, reason = "used by the refresh scheduler and file cache"))]
+    #[cfg(test)]
     pub(crate) fn next_refresh(&self) -> Result<Option<QueuedRefresh>> {
         let connection = self.connection.lock();
 
@@ -415,14 +416,40 @@ impl Store {
             .map_err(sql_error)
     }
 
+    /// Claim the oldest queued refresh for `claim`. An entry claimed before `stale_before`
+    /// (a crashed process) can be claimed again. Returns the claimed entry.
+    pub(crate) fn claim_refresh(
+        &self,
+        claim: &str,
+        now: DateTime<Utc>,
+        stale_before: DateTime<Utc>,
+    ) -> Result<Option<QueuedRefresh>> {
+        let connection = self.connection.lock();
+
+        connection
+            .query_row(
+                "UPDATE installations SET enqueue_token = ?1, claimed_at = ?2
+                 WHERE id = (
+                     SELECT id FROM installations
+                     WHERE enqueued_at IS NOT NULL AND enqueue_token IS NOT NULL
+                       AND (claimed_at IS NULL OR claimed_at < ?3)
+                     ORDER BY enqueued_at, id LIMIT 1
+                 )
+                 RETURNING id, enqueue_token",
+                params![claim, now.timestamp(), stale_before.timestamp()],
+                |row| Ok(QueuedRefresh { installation_id: row.get(0)?, token: row.get(1)? }),
+            )
+            .optional()
+            .map_err(sql_error)
+    }
+
     /// Clear a queue entry only if it still carries `token`, so a newer request is kept.
-    #[cfg_attr(not(test), expect(dead_code, reason = "used by the refresh scheduler and file cache"))]
     pub(crate) fn dequeue_refresh(&self, entry: &QueuedRefresh) -> Result<bool> {
         let cleared = self
             .connection
             .lock()
             .execute(
-                "UPDATE installations SET enqueued_at = NULL, enqueue_token = NULL
+                "UPDATE installations SET enqueued_at = NULL, enqueue_token = NULL, claimed_at = NULL
                  WHERE id = ?1 AND enqueue_token = ?2",
                 params![entry.installation_id, entry.token],
             )
@@ -434,7 +461,6 @@ impl Store {
     // --------------------------------------------------------------------------------------------
     // Stored files
 
-    #[cfg_attr(not(test), expect(dead_code, reason = "used by the refresh scheduler and file cache"))]
     pub(crate) fn record_stored_file(&self, sha256: &str, file_name: &str, size: u64) -> Result<()> {
         let size = i64::try_from(size).map_err(|_| EngineError::Storage("stored file is too large".into()))?;
 
@@ -535,6 +561,22 @@ mod tests {
     }
 
     #[test]
+    fn version_one_databases_migrate_to_the_current_schema() {
+        let directory = tempfile::tempdir().expect("data directory");
+        let connection = Connection::open(directory.path().join("state.sqlite3")).expect("connection");
+        connection.execute_batch(SCHEMA).expect("version 1 schema");
+        connection.pragma_update(None, "user_version", 1).expect("version 1");
+        drop(connection);
+
+        let store = Store::open(directory.path()).expect("migrate");
+        store.record_installation(&installation("UDID1", "com.example.app", "/a.ipa")).expect("insert");
+
+        let connection = Connection::open(directory.path().join("state.sqlite3")).expect("connection");
+        let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0)).expect("version");
+        assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
     fn schema_is_created_once_and_newer_schemas_are_refused() {
         let directory = tempfile::tempdir().expect("data directory");
 
@@ -632,7 +674,24 @@ mod tests {
         assert!(!store.enqueue_refresh(second, "token-3", late).expect("already queued"));
 
         let next = store.next_refresh().expect("next").expect("queued");
-        assert_eq!(next, QueuedRefresh { installation_id: second, token: "token-2".into() });
+        assert_eq!(next.installation_id, second);
+
+        let claimed = store.claim_refresh("claim-a", late, early).expect("claim").expect("entry");
+        assert_eq!(claimed.installation_id, second);
+        assert_eq!(
+            store.claim_refresh("claim-b", late, early).expect("claim").map(|entry| entry.installation_id),
+            Some(first)
+        );
+        assert!(
+            store.claim_refresh("claim-c", late, early).expect("claim").is_none(),
+            "claimed entries are not reissued"
+        );
+
+        let much_later: DateTime<Utc> = "2026-09-03T00:00:00Z".parse().expect("date");
+        let reclaimed = store.claim_refresh("claim-d", much_later, much_later).expect("claim").expect("stale claim");
+        assert_eq!(reclaimed.installation_id, second, "a stale claim can be taken over");
+        assert!(store.dequeue_refresh(&reclaimed).expect("dequeue reclaimed"));
+        assert!(store.enqueue_refresh(second, "token-2", early).expect("queue again"));
 
         let stale = QueuedRefresh { installation_id: second, token: "token-old".into() };
         assert!(!store.dequeue_refresh(&stale).expect("stale token"));

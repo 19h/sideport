@@ -6461,11 +6461,13 @@ dependencies = [
  "bytes",
  "chrono",
  "futures",
+ "gethostname",
  "idevice",
  "plist",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -6490,6 +6492,7 @@ dependencies = [
  "sl-apple",
  "sl-bundle",
  "sl-codesign",
+ "sl-device",
  "sl-macho",
  "sl-testkit",
  "tempfile",
@@ -6518,6 +6521,7 @@ dependencies = [
  "cms",
  "const-oid 0.9.6",
  "der",
+ "futures",
  "parking_lot",
  "plist",
  "rsa",
@@ -6526,6 +6530,7 @@ dependencies = [
  "sha2 0.10.9",
  "signature",
  "sl-codesign",
+ "sl-device",
  "spki",
  "wiremock",
  "x509-cert",

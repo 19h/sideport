@@ -16,6 +16,8 @@ tokio.workspace = true
 futures.workspace = true
 bytes.workspace = true
 chrono.workspace = true
+gethostname.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

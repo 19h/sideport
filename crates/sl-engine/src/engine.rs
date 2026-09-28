@@ -4,9 +4,11 @@
 //! returned future only awaits a oneshot, so gpui (or any executor) can drive it.
 
 mod auth;
+mod devices;
 mod files;
 mod portal;
 mod provision;
+mod refresh;
 mod sideload;
 mod state;
 
@@ -16,6 +18,7 @@ use crate::job::{JobContext, JobHandle};
 use crate::secrets::SecretStore;
 use crate::store::Store;
 use crate::types::*;
+pub use devices::DeviceBackend;
 use futures::channel::oneshot;
 use parking_lot::{Mutex, RwLock};
 use std::collections::BTreeMap;
@@ -41,6 +44,8 @@ pub struct EngineConfig {
     pub portal_origin: Option<String>,
     /// Trust anchors and signer names for downloaded profiles (default: Apple Root CA policy).
     pub profile_trust: Option<sl_codesign::ProfileTrust>,
+    /// Device layer (default: the system usbmuxd).
+    pub device_backend: Option<DeviceBackend>,
 }
 
 /// Notifications from the background refresh scheduler.
@@ -61,6 +66,7 @@ struct Inner {
     store: Store,
     secrets: Box<dyn SecretStore>,
     profile_trust: sl_codesign::ProfileTrust,
+    devices: devices::Devices,
     /// Serializes signing-key creation within this process; the store serializes processes.
     key_lock: Mutex<()>,
     accounts: Mutex<BTreeMap<String, LiveAccount>>,
@@ -78,14 +84,17 @@ struct Subscribers {
 }
 
 impl Inner {
-    #[allow(dead_code)]
-    fn publish_devices(&self, devices: &[DeviceInfo]) {
-        if let Some(subscribers) = self.subscribers.upgrade() {
-            subscribers.devices.lock().retain(|sender| sender.try_send(devices.to_vec()).is_ok());
-        }
+    /// Send a device snapshot to subscribers; `false` once every engine handle is gone.
+    fn publish_devices(&self, devices: &[DeviceInfo]) -> bool {
+        let Some(subscribers) = self.subscribers.upgrade() else {
+            return false;
+        };
+
+        subscribers.devices.lock().retain(|sender| sender.try_send(devices.to_vec()).is_ok());
+
+        true
     }
 
-    #[allow(dead_code)]
     fn publish_refresh(&self, event: &RefreshEvent) {
         if let Some(subscribers) = self.subscribers.upgrade() {
             subscribers.refresh.lock().retain(|sender| sender.try_send(event.clone()).is_ok());
@@ -155,8 +164,9 @@ impl Engine {
             .map_err(|error| EngineError::Auth(error.to_string()))?;
 
         let subscribers = Arc::new(Subscribers::default());
+        let scheduler = !config.disable_scheduler && !config.demo;
 
-        Ok(Self {
+        let engine = Self {
             subscribers: subscribers.clone(),
             inner: Arc::new(Inner {
                 runtime,
@@ -167,13 +177,20 @@ impl Engine {
                 store,
                 secrets,
                 profile_trust,
+                devices: devices::Devices::new(config.device_backend),
                 key_lock: Mutex::new(()),
                 accounts: Mutex::new(accounts),
                 demo,
                 next_job: AtomicU64::new(1),
                 subscribers: Arc::downgrade(&subscribers),
             }),
-        })
+        };
+
+        if scheduler {
+            refresh::start(&engine.inner);
+        }
+
+        Ok(engine)
     }
 
     pub fn is_demo(&self) -> bool {
@@ -231,8 +248,17 @@ impl Engine {
     pub fn subscribe_devices(&self) -> async_channel::Receiver<Vec<DeviceInfo>> {
         let (tx, rx) = async_channel::unbounded();
 
-        if let Some(d) = &self.inner.demo {
-            let _ = tx.try_send(d.devices());
+        match &self.inner.demo {
+            Some(demo) => {
+                let _ = tx.try_send(demo.devices());
+            }
+            None => {
+                if let Some(snapshot) = self.inner.devices.snapshot() {
+                    let _ = tx.try_send(snapshot);
+                }
+
+                devices::watch(&self.inner);
+            }
         }
 
         let mut subscribers = self.subscribers.devices.lock();
@@ -244,36 +270,75 @@ impl Engine {
 
     pub fn devices(&self) -> impl Future<Output = Result<Vec<DeviceInfo>>> + use<> {
         let demo = self.inner.demo.clone();
-        self.run(async move { demo.map(|d| d.devices()).ok_or_else(not_yet) })
+        let inner = self.inner.clone();
+
+        self.run(async move {
+            match demo {
+                Some(demo) => Ok(demo.devices()),
+                None => devices::list(&inner).await,
+            }
+        })
     }
 
     pub fn device_apps(&self, udid: String) -> impl Future<Output = Result<Vec<DeviceApp>>> + use<> {
         let demo = self.inner.demo.clone();
-        self.run(async move { demo.map(|d| d.device_apps(&udid)).ok_or_else(not_yet) })
+        let inner = self.inner.clone();
+
+        self.run(async move {
+            match demo {
+                Some(demo) => Ok(demo.device_apps(&udid)),
+                None => devices::apps(&inner, &udid).await,
+            }
+        })
     }
 
     pub fn uninstall_app(&self, udid: String, bundle_id: String) -> impl Future<Output = Result<()>> + use<> {
-        let _ = (udid, bundle_id);
         let demo = self.inner.demo.clone();
-        self.run(async move { demo.map(|_| ()).ok_or_else(not_yet) })
+        let inner = self.inner.clone();
+
+        self.run(async move {
+            match demo {
+                Some(_) => Ok(()),
+                None => devices::uninstall(&inner, &udid, &bundle_id).await,
+            }
+        })
     }
 
     pub fn device_profiles(&self, udid: String) -> impl Future<Output = Result<Vec<DeviceProfile>>> + use<> {
         let demo = self.inner.demo.clone();
-        self.run(async move { demo.map(|d| d.device_profiles(&udid)).ok_or_else(not_yet) })
+        let inner = self.inner.clone();
+
+        self.run(async move {
+            match demo {
+                Some(demo) => Ok(demo.device_profiles(&udid)),
+                None => devices::profiles(&inner, &udid).await,
+            }
+        })
     }
 
     pub fn remove_profile(&self, udid: String, uuid: String) -> impl Future<Output = Result<()>> + use<> {
-        let _ = (udid, uuid);
         let demo = self.inner.demo.clone();
-        self.run(async move { demo.map(|_| ()).ok_or_else(not_yet) })
+        let inner = self.inner.clone();
+
+        self.run(async move {
+            match demo {
+                Some(_) => Ok(()),
+                None => devices::remove_profile(&inner, &udid, &uuid).await,
+            }
+        })
     }
 
     /// Start pairing (shows the "Trust This Computer?" dialog on the device).
     pub fn pair_device(&self, udid: String) -> impl Future<Output = Result<()>> + use<> {
-        let _ = udid;
         let demo = self.inner.demo.clone();
-        self.run(async move { demo.map(|_| ()).ok_or_else(not_yet) })
+        let inner = self.inner.clone();
+
+        self.run(async move {
+            match demo {
+                Some(_) => Ok(()),
+                None => devices::pair(&inner, &udid).await,
+            }
+        })
     }
 
     // --------------------------------------------------------------------------------------------
@@ -488,12 +553,23 @@ impl Engine {
     /// Re-run the stored job of an installation now.
     pub fn refresh(&self, installation_id: i64) -> JobHandle<JobOutcome> {
         let demo = self.inner.demo.clone();
+        let inner = self.inner.clone();
+
         self.job(move |ctx| async move {
             match demo {
                 Some(d) => d.refresh(ctx, installation_id).await,
-                None => Err(not_yet()),
+                None => refresh::refresh(inner, ctx, installation_id).await,
             }
         })
+    }
+
+    /// Run one scheduler pass now: queue due installations on reachable devices and refresh
+    /// them without interaction. Returns the number refreshed successfully.
+    pub fn refresh_due(&self) -> impl Future<Output = Result<usize>> + use<> {
+        let demo = self.inner.demo.is_some();
+        let inner = self.inner.clone();
+
+        self.run(async move { if demo { Ok(0) } else { refresh::tick(&inner).await } })
     }
 
     /// Background refresh notifications.
@@ -546,8 +622,4 @@ impl Engine {
 
         JobHandle::new(id, events, rx, cancel)
     }
-}
-
-fn not_yet() -> EngineError {
-    EngineError::Unsupported("engine backend not implemented yet".into())
 }

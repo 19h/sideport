@@ -6,9 +6,11 @@
 
 #![forbid(unsafe_code)]
 
+pub mod device;
 pub mod pki;
 pub mod portal;
 pub mod profile;
 
+pub use device::FakeDevice;
 pub use pki::{Issued, ProfileChain};
 pub use portal::{FakePortal, PortalState};

@@ -46,8 +46,9 @@ Settings load/save uses bounded JSON and an atomic same-directory temporary file
 updated only after the disk write commits. Invalid settings are reported instead of overwritten.
 Accounts, teams, certificates, installations, the refresh queue and stored-file records live in
 `state.sqlite3` (schema version 1; a newer schema is refused). Secrets live in the keychain or a
-0600 file (docs/APPLE.md). Installations can be listed, toggled and forgotten; forgetting deletes
-an unreferenced stored IPA copy. The refresh scheduler and device installation are pending.
+0600 file (docs/APPLE.md). Installations can be listed, toggled, refreshed and forgotten;
+forgetting deletes an unreferenced stored IPA copy. Device jobs, refresh and the scheduler are
+described in docs/DEVICE.md.
 
 Apple ID export (`SigningMode::AppleId` with `Target::ExportIpa`) inspects the input, runs the
 provisioning policy in docs/APPLE.md, asks for the output path, then patches, injects and signs
@@ -79,8 +80,9 @@ These are algorithmic bounds; measured throughput, peak RSS, and cancellation la
 identifier/name/version/OS changes, extension policy, file sharing, device restriction removal,
 local injection, replacement/deletion, progress, cancellation, and save-path prompts. JSON
 results go to stdout; job diagnostics go to stderr. Inspection JSON omits icon pixel bytes.
-Unattended exports require an output path. Device targets, custom icons, and entitlement
-overrides without Apple ID signing return explicit unsupported errors before output mutation.
+Unattended exports require an output path. Custom icons, unsigned device installs, and
+entitlement overrides without Apple ID signing return explicit unsupported errors before output
+mutation.
 
 Bundle identifiers and primary icon declarations follow
 [Apple's Core Foundation Keys reference](https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html).
@@ -97,8 +99,9 @@ UI.md records its implementation, primary sources, and rendered evidence.
 
 ## Verification and assumptions
 
-The five-crate suite currently has 118 tests: sl-bundle 27, sl-codesign 39, sl-macho 10,
-sl-engine 37, and sl-cli 5. The full workspace also runs sl-apple 33 and sl-app 8, for 159. The engine authentication/portal and CLI anisette tests are
+The five-crate suite currently has 123 tests: sl-bundle 27, sl-codesign 39, sl-macho 10,
+sl-engine 42, and sl-cli 5. The full workspace also runs sl-apple 33, sl-device 12 and sl-app 8,
+for 176, plus two ignored local probes. The engine authentication/portal and CLI anisette tests are
 described in APPLE.md. Native generated universal code is exported through the real engine,
 accepted by Apple's codesign with strict/deep/all-architecture verification, and executes.
 Info.plist tampering is rejected. CLI subprocess tests cover metadata/export JSON and SIGINT

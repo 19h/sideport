@@ -9,6 +9,8 @@ publish.workspace = true
 
 [dependencies]
 sl-codesign.workspace = true
+sl-device.workspace = true
+futures.workspace = true
 plist.workspace = true
 chrono.workspace = true
 serde_json.workspace = true

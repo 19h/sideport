@@ -56,7 +56,6 @@ pub(crate) struct ProvisionRequest {
 
 #[derive(Debug)]
 pub(crate) struct Provisioned {
-    #[expect(dead_code, reason = "recorded by device installation jobs")]
     pub team: TeamSummary,
     pub identity: Arc<SigningIdentity>,
     /// Final main-app `CFBundleIdentifier`.

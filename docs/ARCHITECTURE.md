@@ -22,11 +22,11 @@ server implementations are unknown.
 | Local AOSKit, Mail plugin notifications/kbsync, remote anisette and fallback policy | Real bounded remote provider, shared cache, engine/CLI checks; HTTP, cancellation, clock, decompression and validation tests; docs/APPLE.md | Native AOSKit/Mail bridge, fallback selection, private provider integration and live checks |
 | GSA SRP, legacy IDMS, app tokens, trusted-device/SMS 2FA, session migration/persistence | SRP/negotiation/CBC/GCM primitives and bounded GSA transport; eight independent Python vectors; mock-server alternate-anisette, second-factor and cancellation tests; engine login with keychain/file-persisted sessions and remembered passwords, restart restore, recovered `sessions.json` import and 1100 renewal; docs/APPLE.md | Legacy IDMS, account UI/CLI and live account verification; uncertain second-factor branches require live parity checks |
 | Portal teams, devices, certificates/CSR/reuse/revocation, app IDs, profiles, free/paid/tvOS policies | Typed QH65B2 client; engine provisioning with device registration, certificate reuse by public key, CSR, confirmed 7460 revocation, App ID reuse/creation and free quota, trust-verified profile download, recovered bundle-ID policy, tvOS and per-extension options; Apple ID IPA export; stateful fake-portal and native codesign/OpenSSL checks | Device-target provisioning, UI/CLI workflows, and live account/device verification |
-| USB/Wi-Fi discovery, lockdown/pairing, AFC resumable file/ZIP upload, installation retry/progress | Device crate is a stub; idevice dependency present | Real implementation, simulated failures and physical-device verification |
-| Apps/profiles management, syslog, Developer Disk Images and JIT | Pending | Protocol tests and physical-device verification |
+| USB/Wi-Fi discovery, lockdown/pairing, AFC resumable file/ZIP upload, installation retry/progress | `sl-device` usbmuxd discovery/watch, lockdown values, pairing, AFC staging, framed installation proxy, recovered retry policy, deterministic ZIP streaming with backpressure; engine device jobs; 11 fault-injection and 4 engine fixtures; read-only probe of a USB iPhone (docs/DEVICE.md) | Physical installation, Wi-Fi and tvOS PIN pairing verification |
+| Apps/profiles management, syslog, Developer Disk Images and JIT | App list/uninstall and profile list/remove through the device layer with fixtures | Syslog, Developer Disk Images, JIT and physical verification |
 | Apple Silicon conversion, entitlement adjustments, SINF enrichment and application installation | Pending | Implementation and native Mac verification |
 | URI/download channels, HTTP resume, App Store authentication/purchase/download, FairPlay metadata/kbsync | Pending | Client implementation, controlled transport fixtures and live service verification |
-| Stored files, installations DB, refresh policy/scheduler, tray/autostart and local IPC | Real export/inspection engine; atomic settings; SQLite accounts/certificates/installations/refresh queue/stored files with restart and queue fixtures; runtime/job/prompt cancellation fixtures | Installation recording from device jobs, refresh scheduler, expiry, tray/autostart and IPC integration |
+| Stored files, installations DB, refresh policy/scheduler, tray/autostart and local IPC | SQLite accounts/certificates/installations with content-addressed stored inputs; device jobs record installations; refresh replay; scheduler with due selection, reachability and cross-process claims; fixtures | Tray/autostart, local IPC, clock-shift and crash tests |
 | Feature tokens, Patreon OAuth, private remote providers and update/version protocol | Pending | Configurable client implementations, recovered protocol fixtures; server behavior remains unknown |
 | CLI and intuitive GPUI interface covering the workflows above | CLI inspection/export/JSON/typed edits/injection/cancellation; official Zed GPUI inspection/editor/export with native pickers, progress, prompts, cancellation and themes; real engine/GPUI interaction tests and native window inspection | Remaining CLI/desktop workflows; complete accessibility, additional platform/runtime and full account/device user-flow evidence |
 
@@ -39,7 +39,8 @@ covered behavior, not completion of a workflow that depends on accounts, devices
 - sl-codesign: identities, profiles, signature encodings and resource seals.
 - sl-bundle: archive preparation, bundle editing, injection and ordered signing.
 - sl-apple: authentication, anisette, portal and Store clients.
-- sl-device: device transports, services, installation and utilities.
+- sl-device: device transports, services, installation and utilities (docs/DEVICE.md).
+- sl-testkit: test-only generated PKI, signed profiles, fake portal and fake device layer.
 - sl-engine: jobs, policies, storage, refresh, IPC and integration.
 - sl-cli: scriptable commands.
 - sl-app: GPUI desktop interface.
