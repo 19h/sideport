@@ -23,6 +23,8 @@ chrono.workspace = true
 clap.workspace = true
 tokio-util.workspace = true
 serde_json.workspace = true
+url.workspace = true
+async-channel.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 rfd = { version = "=0.17.2", default-features = false }

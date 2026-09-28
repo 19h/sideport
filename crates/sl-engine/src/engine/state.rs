@@ -142,7 +142,8 @@ pub(super) fn import_recovered_sessions(inner: &Inner, path: &std::path::Path) -
         return Err(EngineError::Storage("sessions file exceeds 1 MiB".into()));
     }
 
-    let sessions: serde_json::Map<String, serde_json::Value> = serde_json::from_slice(&bytes)
+    // A sorted map: the import order and report do not depend on serde_json's map features.
+    let sessions: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_slice(&bytes)
         .map_err(|_| EngineError::Storage("sessions file is not a JSON object".into()))?;
 
     let mut report = SessionImport::default();

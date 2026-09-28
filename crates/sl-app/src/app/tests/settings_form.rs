@@ -47,3 +47,29 @@ async fn settings_validate_then_save_provider_refresh_and_defaults(cx: &mut Test
     click(&mut cx, "nav:Settings");
     assert!(cx.read(|cx| view.read(cx).settings.remote), "reopening Settings shows the saved provider");
 }
+
+#[gpui::test]
+async fn the_autostart_toggle_installs_and_removes_the_login_item(cx: &mut TestAppContext) {
+    let temporary = tempfile::tempdir().expect("tempdir");
+    let agents = temporary.path().join("LaunchAgents");
+    let config = EngineConfig { autostart_dir: Some(agents.clone()), ..EngineConfig::default() };
+    let engine = isolated(temporary.path(), &FakeDevice::iphone(UDID), config);
+    let program = temporary.path().join("bin/sideport");
+    let (view, mut cx) = window(engine.clone(), cx);
+
+    cx.update(|_, cx| view.update(cx, |view, _| view.daemon_program = Some(program.clone())));
+    click(&mut cx, "nav:Settings");
+    click(&mut cx, "autostart");
+
+    assert!(engine.autostart(), "the login item is installed at once");
+    let entry = fs::read_dir(&agents).expect("login items").next().expect("entry").expect("entry").path();
+    let written = fs::read_to_string(&entry).expect("login item");
+    assert!(written.contains(program.to_str().expect("path")) && written.contains("daemon"), "{written}");
+
+    click(&mut cx, "autostart");
+    assert!(!engine.autostart());
+    assert!(!entry.exists());
+
+    let demo = demo_engine(&temporary.path().join("demo"));
+    assert!(demo.set_autostart(true, &program).is_err(), "the demo never installs login items");
+}

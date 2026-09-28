@@ -60,6 +60,27 @@ impl Sideport {
                     .text_color(cx.theme().muted_foreground)
                     .child(format!("{shortcut} to open • Your original input stays unchanged")),
             )
+            .child(
+                div()
+                    .w(px(520.))
+                    .flex()
+                    .gap_2()
+                    .child(div().flex_1().child(Input::new(&self.fields.link).disabled(self.occupied())))
+                    .child(
+                        Button::new("download-link")
+                            .outline()
+                            .label("Download")
+                            .debug_selector(|| "download-link".into())
+                            .disabled(self.occupied())
+                            .on_click(cx.listener(|view, _, window, cx| view.submit_link(window, cx))),
+                    ),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Or download from a sideloadly: link or an https:// IPA URL."),
+            )
     }
 
     fn render_editor(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

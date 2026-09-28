@@ -326,11 +326,15 @@ impl Engine {
 
     /// Whether the refresh scheduler starts at login.
     pub fn autostart(&self) -> bool {
-        self.inner.autostart_dir.as_deref().is_some_and(crate::autostart::is_enabled)
+        self.inner.demo.is_none() && self.inner.autostart_dir.as_deref().is_some_and(crate::autostart::is_enabled)
     }
 
     /// Start `<program> daemon` at login (LaunchAgent on macOS, XDG autostart on Linux).
     pub fn set_autostart(&self, enabled: bool, program: &std::path::Path) -> Result<()> {
+        if self.inner.demo.is_some() {
+            return Err(EngineError::Unsupported("the demo backend does not install login items".into()));
+        }
+
         let directory = self
             .inner
             .autostart_dir

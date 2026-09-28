@@ -6340,6 +6340,7 @@ name = "sl-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-channel 2.5.0",
  "chrono",
  "clap",
  "futures",
@@ -6358,6 +6359,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "url",
  "wiremock",
 ]
 

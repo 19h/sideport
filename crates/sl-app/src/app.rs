@@ -24,6 +24,7 @@ mod accounts;
 mod devices;
 mod installations;
 mod ipc;
+mod links;
 mod settings;
 mod signing;
 mod view;
@@ -103,6 +104,8 @@ struct Fields {
     minimum_os: Entity<InputState>,
     overrides: Entity<InputState>,
     upload_chunk: Entity<InputState>,
+    /// A `sideloadly:` link or HTTP(S) IPA URL to download and open.
+    link: Entity<InputState>,
 }
 
 impl Fields {
@@ -114,13 +117,14 @@ impl Fields {
         let short_version = input("Release version");
         let minimum_os = input("Minimum OS version");
         let upload_chunk = input("1");
+        let link = input("sideloadly: link or https:// IPA URL");
         let overrides = cx.new(|cx| {
             InputState::new(window, cx)
                 .multi_line(true)
                 .placeholder("{\"CustomKey\": \"value\", \"RemoveThisKey\": null}")
         });
 
-        Self { name, identifier, version, short_version, minimum_os, overrides, upload_chunk }
+        Self { name, identifier, version, short_version, minimum_os, overrides, upload_chunk, link }
     }
 
     fn load(&self, draft: &Draft, window: &mut Window, cx: &mut App) {
@@ -187,6 +191,8 @@ impl Dialog {
 /// The desktop root owns task handles so closing it cancels outstanding work.
 pub struct Sideport {
     engine: Engine,
+    /// The `sideport` tool the login item runs, when it is installed beside this app.
+    daemon_program: Option<PathBuf>,
     focus: FocusHandle,
     section: Section,
     app: Option<AppSummary>,
@@ -270,6 +276,7 @@ impl Sideport {
 
         let mut sideport = Self {
             engine,
+            daemon_program: settings::daemon_program(),
             focus,
             section: Section::default(),
             app: None,
@@ -305,6 +312,7 @@ impl Sideport {
         sideport.reload_accounts();
         sideport.reload_installations();
         sideport.watch_refresh(window, cx);
+        sideport.submit_link_on_enter(window, cx);
 
         sideport
     }

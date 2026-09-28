@@ -17,6 +17,7 @@ mod account_flows;
 mod device_flows;
 mod installation_flows;
 mod ipc_requests;
+mod link_sources;
 mod prompt_dialogs;
 mod real_install;
 mod settings_form;

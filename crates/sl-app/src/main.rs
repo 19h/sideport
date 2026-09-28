@@ -58,7 +58,16 @@ fn main() -> anyhow::Result<()> {
 
     let ipc_served = ipc.is_some();
 
-    Application::new().with_assets(Assets).run(move |cx: &mut App| {
+    // URLs the system opens the app with (the `sideloadly` scheme, IPA documents) arrive before or
+    // after the window exists; queue them for the view.
+    let (opened_urls, url_queue) = async_channel::unbounded::<Vec<String>>();
+    let application = Application::new().with_assets(Assets);
+
+    application.on_open_urls(move |urls| {
+        let _ = opened_urls.try_send(urls);
+    });
+
+    application.run(move |cx: &mut App| {
         gpui_component::init(cx);
         bind_keys(cx);
         set_menus(cx);
@@ -80,6 +89,8 @@ fn main() -> anyhow::Result<()> {
                 if ipc_served {
                     view.update(cx, |view, cx| view.listen_for_ipc(window, cx));
                 }
+
+                view.update(cx, |view, cx| view.listen_for_urls(url_queue, window, cx));
 
                 if let Some(source) = arguments.source {
                     view.update(cx, |view, cx| view.load_path(source, window, cx));

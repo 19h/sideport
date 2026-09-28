@@ -169,6 +169,24 @@ impl Sideport {
         cx.notify();
     }
 
+    /// Install or remove the login item that runs the refresh scheduler.
+    pub(super) fn set_autostart(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        let Some(program) = self.daemon_program.clone() else {
+            return;
+        };
+
+        match self.engine.set_autostart(enabled, &program) {
+            Ok(()) => {
+                let state = if enabled { "starts" } else { "no longer starts" };
+                self.settings.notice = Some(format!("Refresh {state} at login."));
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+
+        cx.notify();
+    }
+
     pub(super) fn save_settings(&mut self, cx: &mut Context<Self>) {
         // The form applies to the stored settings as they are now; an invalid form saves nothing.
         let form = &self.settings;
@@ -291,6 +309,12 @@ impl Sideport {
             )
             .children(probe);
 
+        let autostart_note = match (&self.daemon_program, self.engine.is_demo()) {
+            (_, true) => "Starting at login is unavailable in the demo.".to_owned(),
+            (Some(program), false) => format!("Runs {} daemon at login; saved immediately.", program.display()),
+            (None, false) => "Starting at login needs the sideport command-line tool beside this app.".to_owned(),
+        };
+
         let refresh = card(cx)
             .child(section_title("Automatic refresh"))
             .child(checkbox(
@@ -300,6 +324,15 @@ impl Sideport {
                 cx,
                 |form, checked| form.refresh_enabled = checked,
             ))
+            .child(
+                Checkbox::new("autostart")
+                    .label("Keep refreshing after this window closes (start at login)")
+                    .checked(self.engine.autostart())
+                    .disabled(self.daemon_program.is_none() || self.engine.is_demo())
+                    .debug_selector(|| "autostart".into())
+                    .on_click(cx.listener(|view, checked, _, cx| view.set_autostart(*checked, cx))),
+            )
+            .child(muted(autostart_note, cx))
             .child(
                 div()
                     .flex()
@@ -383,6 +416,15 @@ fn checkbox(
             cx.notify();
         },
     ))
+}
+
+/// The command-line tool that runs the scheduler at login: `sideport` beside this executable
+/// (`Contents/MacOS` in the packaged app).
+pub(super) fn daemon_program() -> Option<std::path::PathBuf> {
+    let executable = std::env::current_exe().ok()?;
+    let program = executable.with_file_name(if cfg!(windows) { "sideport.exe" } else { "sideport" });
+
+    program.is_file().then_some(program)
 }
 
 #[cfg(test)]
