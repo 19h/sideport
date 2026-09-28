@@ -42,6 +42,26 @@ instead of `sideloadly/<version>@darwin`. App Store deeplinks are parsed but rep
 unsupported: the recovered Store client authenticates with kbsync from the Mail plug-in, which the
 recovered client disables on macOS Sonoma and later.
 
+## Remote and special injection sources
+
+`special` resolves injection items that are not local files, reconstructed from the Go
+`slpy.(*injector)`. Every endpoint lives in a configurable `SpecialSources` struct (default: the
+recovered public hosts) so tests point it at wiremock; the real hosts are never contacted in
+tests. `SpecialResolver` owns an HTTP client and the sources so callers need no `reqwest` types.
+
+* `///special/substrate` scrapes the MobileSubstrate version from the text between `latest">` and
+  the next `<` on the Cydia package page (default `0.9.6301` on any failure) and formats
+  `.../mobilesubstrate_<v>_iphoneos-arm.deb`.
+* `///special/substitute` scans the Bingner directory listing for `com.ex.substitute_*.deb`,
+  picks the highest numeric version (default `com.ex.substitute_2.1.0_iphoneos-arm.deb`) and joins
+  it onto the index URL.
+* `///special/spoofer` reads the `filename` field of `spoofer.json` and joins it onto the base.
+
+`download` streams an arbitrary artifact (a `.deb` or tweak) to a path with cancellation and a
+512 MiB bound, making no IPA assumptions (no flip, ZIP-magic check or hashing), unlike
+`Downloader`. The engine downloads these into `<data dir>/injection-cache`, unpacks `.deb`s with
+`sl_bundle::extract_deb` and removes the cached files when the job ends; see docs/BUNDLE.md.
+
 ## Verification
 
 Six unit tests cover opaque and query links, digests, deeplinks, recovered error messages, the
@@ -53,6 +73,11 @@ makes four requests with a 10 ms/100 ms schedule and deletes the file; enrichmen
 SINF and artwork; and cancellation within 100 ms of a 5 s response delay. An engine test exports
 a verified link source, removes the download, returns a cached download, reports a hash mismatch
 and refuses a deeplink.
+
+Seven `special` tests run against wiremock: substrate version scraping and its default fallback,
+substitute picking the highest listed version, the spoofer filename, an unknown special, a plain
+file download, and version-tuple ordering. An engine test resolves `///special/substrate` against
+a wiremock host and injects the resolved deb's dylib.
 
 ## Assumptions
 

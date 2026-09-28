@@ -36,6 +36,52 @@ modules. Extension executables retain CS_EXECSEG_MAIN_BINARY: the native fixture
 independently confirms that Apple's signer sets it for the same MH_EXECUTE extension.
 This differs from the recovered Appex class, which lacks an is_main_binary declaration.
 
+## Injection inputs, icons and filename indirection
+
+`sl-bundle` stays offline and takes local files; the engine resolves remote and special sources
+first (docs/ACQUIRE.md). `extract_deb` parses a Debian `ar` archive, decompresses its
+`data.tar.{gz,xz,lzma,bz2,zst}` or uncompressed `data.tar` member with pure-Rust decoders
+(`flate2`, `lzma-rs`, `bzip2` via `libbz2-rs-sys`, `ruzstd`, `tar`, `ar`), and selects exactly the
+items the recovered Go injector takes: `Library/MobileSubstrate/DynamicLibraries/*.dylib` (and the
+rootless `var/jb/...` and `usr/lib/...` equivalents), `Library/Frameworks/*.framework`
+(CydiaSubstrate, with iGameGod special-cased to return that framework alone), and
+`Library/Application Support/*.bundle`. `Applications/SubstituteSettings.app` is skipped; when it
+is present, only `.bundle` items are returned (the Substitute case). A package that yields nothing
+and has no DynamicLibraries directory is rejected ("deb looks malformed"). Path escapes (`..`,
+absolute, drive-letter and symlink-ancestor paths) are refused, and both decode stages are size
+bounded. Deliberate deviations: bundle-internal symlinks are written as real, escape-checked
+symlinks rather than the recovered `<name>%symlink` placeholder files (Sideport does not mangle its
+staging tree, and the existing injection copy and deterministic packer preserve real symlinks);
+`CydiaSubstrate.framework/Info.plist` is copied unchanged rather than reformatted.
+
+Substrate rewrites and target selection are in `inject.rs`/`sl-macho` and were already present:
+`LC_ID_DYLIB`/`LC_LOAD_DYLIB` references to `CydiaSubstrate.framework/CydiaSubstrate` and
+`libsubstrate.dylib` are rewritten to `@executable_path/Frameworks/CydiaSubstrate.framework/`
+`CydiaSubstrate`; the target binary is `UnityFramework` when present, else the main executable; an
+`@executable_path/Frameworks` `LC_RPATH` is added when missing; and a header that no longer fits
+fails with `sl_macho::Error::HeaderSpace` (the recovered "Inject failed: headers do not fit").
+
+Custom icons (`replace_icon`, reconstructed from the Go `ipa.ReplaceAppIcon`) overwrite the app's
+loose PNG icon files with the user's PNG resized to each existing file's own square pixel size
+(Lanczos3), stripping ancillary chunks and normalizing CgBI. Icon files are found from the
+declared `CFBundleIcons`/`CFBundleIcons~ipad` → `CFBundlePrimaryIcon` → `CFBundleIconFiles` and
+top-level `CFBundleIconFiles`/`CFBundleIconFile` names. Info.plist is not rewritten (the recovered
+code does not, and the existing entries already name these files), and `Assets.car`-packed icons
+are refused ("this app packs its icons in Assets.car, which cannot be replaced"), exactly as
+recovered.
+
+The `mangle` module implements the recovered portable filename indirection (`isign.zip`): each
+path component (except `Info.plist`, `Frameworks`, `PlugIns`, `Extensions`, `InfoPlist.strings`)
+becomes a short `%%<n><ext>` token recorded in a per-directory `.filenames_mangled` map, illegal
+and non-ASCII bytes are percent-quoted, a trailing dot becomes `%2E`, and symlinks carry a
+`%symlink` suffix. This bounds path length and neutralizes Unicode-normalization collisions, long
+names and Windows-reserved names/characters while remaining reversible. It is exposed as a tested
+utility, not wired into Sideport's own unpack/pack, which keep original Unicode names
+(`files::relative_path`) because Sideport controls the whole pipeline and never repacks through a
+name-losing filesystem step. Recorded recovered oddity: `isign.zip.do_mangle_filenames` prints an
+undefined global `un` on its non-`--full` branch (a latent `NameError` never reached by the
+pipeline); Sideport implements the working `--full` behavior and omits the broken branch.
+
 ## Output and format sources
 
 Packing emits sorted entries with a fixed DOS timestamp and compression level. The writer
@@ -59,9 +105,10 @@ The legacy container syntax is described by
 
 ## Verification
 
-The current three-crate suite has 76 tests: 27 bundle tests, 39 code-signing tests and
-10 Mach-O tests, plus one ignored real-profile probe. The five-crate suite including engine/CLI
-has 100 tests. Tests generate their own apps, archives, profiles and certificates.
+The current three-crate suite has 98 tests: 49 bundle tests, 39 code-signing tests and
+10 Mach-O tests, plus one ignored real-profile probe. Tests generate their own apps, archives,
+`.deb` packages, profiles and certificates; the runtime `.deb` decoders are pure Rust and a
+test-only `zstd` compressor builds the `data.tar.zst` fixture.
 
 - Rust zip, Python zipfile and Info-ZIP accept identical forward-only output, including forced ZIP64.
 - CRC damage, duplicate entries, traversal, filesystem-name collisions, symlink ancestors,
@@ -70,6 +117,12 @@ has 100 tests. Tests generate their own apps, archives, profiles and certificate
   valid DEFLATE streams that emit no payload bytes.
 - Read-only directory permissions survive editing and repacking.
 - Metadata, removal, SINF, injection, idempotent load commands and all four thin formats have fixtures.
+- Deb selection (dylib/framework/bundle, skipped SubstituteSettings.app, iGameGod, no-DynamicLibraries
+  rejection), every `data.tar` codec, path-escape rejection and bundle-internal real symlinks have fixtures.
+- Custom-icon replacement resizes to each declared icon size, leaves non-icon PNGs and Info.plist alone,
+  and refuses Assets.car-packed and undeclared icons. Filename mangling has collision, escape, Unicode,
+  long-name and Windows-reserved-name fixtures. Engine tests inject a local `.deb` and a wiremock-resolved
+  `///special/substrate` into an exported IPA's Frameworks and executable load commands.
 - Native codesign verifies nested universal apps/frameworks/extensions strictly after signing
   and after archive round trips. Injected dylib code loads during native execution.
 - Nested resource tampering is rejected; stripped bundles can be signed and verified again.
@@ -105,8 +158,11 @@ archives and physical-device upload remains required.
   Dependent results: interoperability claims. Probes: independent decoded slots, Apple codesign,
   native execution and tamper rejection. Physical-device installation remains unverified.
 - A3: Host filename handling preserves the tested names. Dependent results: extraction/repacking
-  name fidelity. Probes: Unicode normalization/case collisions and exclusive node creation.
-  Portable shortening/indirection and Windows-specific long-name/symlink cases remain pending.
+  name fidelity. Probes: Unicode normalization/case collisions and exclusive node creation. The
+  recovered `%%<n>`/`.filenames_mangled` indirection is implemented and tested (collision, escape,
+  Unicode, long-name, Windows-reserved) as a standalone utility but is not wired into Sideport's own
+  unpack/pack, which keep original Unicode names; cross-platform (Windows) round-trips remain
+  unverified.
 
 ## Bounded remaining work
 
@@ -114,9 +170,12 @@ High impact: Apple authentication/provisioning, real device installation, the re
 CLI workflows and GPUI remain incomplete. Real inspection and local exports are now wired
 through engine/CLI and independently verified. ARCHITECTURE.md retains the full ledger.
 
-Medium impact: remote/special/deb injection preparation, icon/asset-catalog editing and
-portable filename indirection remain pending. Forward ZIP streaming still
-needs cancellation/backpressure/resume integration with AFC.
+Medium impact: `.deb`/`ar` injection inputs, remote and special (`substrate`/`substitute`/
+`spoofer`) source resolution, custom loose-PNG icon replacement and the portable filename-mangling
+utility are implemented with fixtures; remaining evidence is real tweak packages, live special
+hosts and native execution of injected/rebuilt binaries on a device. `Assets.car` icon rewriting
+is intentionally not done (refused, as recovered). Forward ZIP streaming still needs
+cancellation/backpressure/resume integration with AFC.
 
 Low impact: output file replacement uses one atomic temporary-file commit rather than the
 original intermediate .bak rotation; failure tests verify that old output survives.
