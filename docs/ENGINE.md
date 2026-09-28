@@ -131,7 +131,16 @@ For a universal binary in a ZIP, S includes decompressed gaps before subsequent 
 Original file copying is O(B) time with a 128 KiB transfer buffer for B source bytes; inspection
 costs are additional. Preparation/packing bounds are in BUNDLE.md. Signing currently retains
 whole binary buffers, so concurrent framework signing can multiply the largest-binary memory cost.
-These are algorithmic bounds; measured throughput, peak RSS, and cancellation latency remain unknown.
+These are algorithmic bounds. One measurement (2026-09-28, Apple M4 Max, 16 cores, release
+build, `/usr/bin/time -l`): exporting a 466 MiB app directory (200 random 1 MiB resources, one
+random 256 MiB resource, a copy of the universal `/bin/ls` as executable) took 9.3 s wall with
+ad-hoc signing (about 50 MiB/s, dominated by DEFLATE of incompressible data) at 27.7 MB peak
+RSS, 8.5 s and 23.2 MB unsigned, and an original-mode copy of the resulting 456 MiB IPA took
+0.35 s at 20.7 MB and was byte-identical. Peak memory therefore did not grow with resource size
+in this run; it does grow with the largest Mach-O, which signing holds whole. (Apple's `codesign`
+rejects that output's macOS-platform executable because it expects no Info.plist binding for a
+macOS binary in an iOS-style bundle; Sideport binds Info.plist as the recovered isign and iOS
+require, and the iOS-platform native fixtures verify.) Cancellation latency is in A3 below.
 
 ## CLI and primary sources
 
