@@ -59,6 +59,9 @@ pub struct EngineConfig {
     pub autostart_dir: Option<PathBuf>,
 }
 
+/// Refresh notifications kept for a receiver that is not reading.
+const REFRESH_BACKLOG: usize = 256;
+
 /// Notifications from the background refresh scheduler.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RefreshEvent {
@@ -71,7 +74,8 @@ pub enum RefreshEvent {
 struct Inner {
     runtime: Arc<RuntimeOwner>,
     data_dir: PathBuf,
-    settings: RwLock<Settings>,
+    /// Settings as last read or written, with the identity of the file they came from.
+    settings: RwLock<(Settings, crate::settings::Revision)>,
     auth_origin: String,
     portal_origin: String,
     store: Store,
@@ -99,6 +103,48 @@ struct Subscribers {
 }
 
 impl Inner {
+    /// Current settings, reloaded when another process saved them. A file that cannot be read
+    /// keeps the last good settings.
+    fn settings(&self) -> Settings {
+        let revision = crate::settings::revision(&self.data_dir);
+
+        {
+            let cached = self.settings.read();
+
+            if cached.1 == revision {
+                return cached.0.clone();
+            }
+        }
+
+        let mut cached = self.settings.write();
+
+        if let Ok(loaded) = crate::settings::load(&self.data_dir) {
+            *cached = loaded;
+        }
+
+        cached.0.clone()
+    }
+
+    /// Change the settings as stored now. The state database's writer lock excludes other
+    /// processes' settings changes meanwhile.
+    fn modify_settings(&self, change: impl FnOnce(&mut Settings) -> Result<()>) -> Result<Settings> {
+        let mut cached = self.settings.write();
+
+        self.store.exclusive(|| {
+            let mut settings = match crate::settings::load(&self.data_dir) {
+                Ok((settings, _)) => settings,
+                Err(_) => cached.0.clone(),
+            };
+
+            change(&mut settings)?;
+
+            let revision = crate::settings::save(&self.data_dir, &settings)?;
+            *cached = (settings.clone(), revision);
+
+            Ok(settings)
+        })
+    }
+
     /// This Mac as an install target, detected once.
     fn mac(&self) -> Option<&MacTarget> {
         self.mac
@@ -110,20 +156,23 @@ impl Inner {
             .as_ref()
     }
 
-    /// Send a device snapshot to subscribers; `false` once every engine handle is gone.
+    /// Send a device snapshot to subscribers, replacing one they have not received yet; `false`
+    /// once every engine handle is gone.
     fn publish_devices(&self, devices: &[DeviceInfo]) -> bool {
         let Some(subscribers) = self.subscribers.upgrade() else {
             return false;
         };
 
-        subscribers.devices.lock().retain(|sender| sender.try_send(devices.to_vec()).is_ok());
+        subscribers.devices.lock().retain(|sender| sender.force_send(devices.to_vec()).is_ok());
 
         true
     }
 
+    /// Send a refresh notification; a receiver more than [`REFRESH_BACKLOG`] behind loses the
+    /// oldest ones.
     fn publish_refresh(&self, event: &RefreshEvent) {
         if let Some(subscribers) = self.subscribers.upgrade() {
-            subscribers.refresh.lock().retain(|sender| sender.try_send(event.clone()).is_ok());
+            subscribers.refresh.lock().retain(|sender| sender.force_send(event.clone()).is_ok());
         }
     }
 }
@@ -240,16 +289,27 @@ impl Engine {
     // --------------------------------------------------------------------------------------------
     // Settings
 
+    /// Current settings; another process's saved changes are picked up.
     pub fn settings(&self) -> Settings {
-        self.inner.settings.read().clone()
+        self.inner.settings()
     }
 
+    /// Replace every setting. Prefer [`Engine::modify_settings`], which keeps fields another
+    /// process changed meanwhile.
     pub fn update_settings(&self, settings: Settings) -> Result<()> {
-        let mut current = self.inner.settings.write();
-        crate::settings::save(&self.inner.data_dir, &settings)?;
-        *current = settings;
+        self.inner.modify_settings(|current| {
+            *current = settings;
+
+            Ok(())
+        })?;
 
         Ok(())
+    }
+
+    /// Apply `change` to the stored settings as they are now, under a lock shared with other
+    /// processes, and save them. Nothing is saved when `change` fails. Returns the saved settings.
+    pub fn modify_settings(&self, change: impl FnOnce(&mut Settings) -> Result<()>) -> Result<Settings> {
+        self.inner.modify_settings(change)
     }
 
     /// Whether the refresh scheduler starts at login.
@@ -296,26 +356,31 @@ impl Engine {
     // --------------------------------------------------------------------------------------------
     // Devices
 
-    /// Current device list, then a fresh snapshot whenever it changes.
+    /// Current device list, then a fresh snapshot whenever it changes. Only the latest snapshot
+    /// is kept for a slow receiver.
     pub fn subscribe_devices(&self) -> async_channel::Receiver<Vec<DeviceInfo>> {
-        let (tx, rx) = async_channel::unbounded();
+        let (tx, rx) = async_channel::bounded(1);
 
-        match &self.inner.demo {
-            Some(demo) => {
-                let _ = tx.try_send(demo.devices());
-            }
-            None => {
-                if let Some(snapshot) = self.inner.devices.snapshot() {
-                    let _ = tx.try_send(snapshot);
-                }
+        if let Some(demo) = &self.inner.demo {
+            let _ = tx.force_send(demo.devices());
 
-                devices::watch(&self.inner);
-            }
+            return rx;
         }
 
-        let mut subscribers = self.subscribers.devices.lock();
-        subscribers.retain(|sender| !sender.is_closed());
-        subscribers.push(tx);
+        // Register before the watcher starts and read the cached snapshot under the subscriber
+        // lock: a concurrent publication then either precedes the read or reaches this sender.
+        {
+            let mut subscribers = self.subscribers.devices.lock();
+
+            if let Some(snapshot) = self.inner.devices.snapshot() {
+                let _ = tx.force_send(snapshot);
+            }
+
+            subscribers.retain(|sender| !sender.is_closed());
+            subscribers.push(tx);
+        }
+
+        devices::watch(&self.inner);
 
         rx
     }
@@ -450,6 +515,31 @@ impl Engine {
             inner.accounts.lock().remove(&apple_id);
             state::forget_account(&inner, &apple_id)
         })
+    }
+
+    /// Choose the team jobs use for an account without asking; `None` asks again at the next
+    /// job. The team must be one of the account's known teams.
+    pub fn set_default_team(&self, apple_id: &str, team_id: Option<String>) -> Result<()> {
+        if let Some(demo) = &self.inner.demo {
+            return demo.set_default_team(apple_id, team_id);
+        }
+
+        let summary = {
+            let mut accounts = self.inner.accounts.lock();
+            let account =
+                accounts.get_mut(apple_id).ok_or_else(|| EngineError::Auth(format!("{apple_id} is not signed in")))?;
+
+            if let Some(team_id) = &team_id
+                && !account.summary.teams.iter().any(|team| &team.team_id == team_id)
+            {
+                return Err(EngineError::Other(format!("{apple_id} has no team {team_id}")));
+            }
+
+            account.summary.default_team = team_id;
+            account.summary.clone()
+        };
+
+        state::save_summary(&self.inner, &summary)
     }
 
     /// Default location of the recovered Sideloadly `sessions.json`, if the platform has one.
@@ -641,7 +731,7 @@ impl Engine {
 
     /// Background refresh notifications.
     pub fn subscribe_refresh(&self) -> async_channel::Receiver<RefreshEvent> {
-        let (tx, rx) = async_channel::unbounded();
+        let (tx, rx) = async_channel::bounded(REFRESH_BACKLOG);
         let mut subscribers = self.subscribers.refresh.lock();
         subscribers.retain(|sender| !sender.is_closed());
         subscribers.push(tx);

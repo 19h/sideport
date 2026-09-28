@@ -45,6 +45,10 @@ pub fn run<T>(job: JobHandle<T>, answers: &Answers) -> Result<T> {
     progress.enable_steady_tick(std::time::Duration::from_millis(100));
 
     let outcome = futures::executor::block_on(async {
+        // A device wait stays open without blocking the terminal; the engine continues when the
+        // device returns and withdraws it.
+        let mut waiting: Option<Prompt> = None;
+
         while let Ok(event) = events.recv().await {
             match event {
                 JobEvent::Stage(stage) => {
@@ -71,8 +75,22 @@ pub fn run<T>(job: JobHandle<T>, answers: &Answers) -> Result<T> {
                 }
 
                 JobEvent::Prompt(prompt) => {
+                    if let (PromptKind::WaitForDevice { device_name, reason, .. }, true) =
+                        (&prompt.kind, std::io::stdin().is_terminal())
+                    {
+                        print_line(&progress, &format!("{device_name}: {reason}"));
+                        print_line(&progress, "Waiting for the device to return; press Ctrl-C to cancel.");
+                        waiting = Some(prompt);
+
+                        continue;
+                    }
+
                     let reply = progress.suspend(|| answer(&prompt, answers));
                     prompt.answer(reply);
+                }
+
+                JobEvent::PromptWithdrawn { id } if waiting.as_ref().is_some_and(|prompt| prompt.id == id) => {
+                    waiting = None;
                 }
 
                 _ => {}

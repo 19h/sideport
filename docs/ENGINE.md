@@ -39,11 +39,25 @@ does not panic inside an async caller. Subscriber senders are owned and released
 
 Progress uses the maximum received count within a stage/total and emits changed intermediate
 counts at most once per 100 ms, plus the initial and terminal counts. This prevents a parallel
-callback per chunk from filling the event queue. The event channel remains unbounded: a stalled
-consumer can still accumulate logs and rate-limited progress over a long job.
+callback per chunk from filling the event queue. Log lines and progress are lossy once 4096
+events wait unread (`EVENT_BACKLOG`): a stalled consumer loses them, and when it catches up it
+receives one warning with the dropped count and the latest dropped progress of the current
+stage. Stages, facts and prompts are always delivered; a job emits a bounded number of them, so
+the queue holds at most the backlog plus those events. A question the job stops waiting for
+(the device returned, or the job was cancelled) is followed by `PromptWithdrawn { id }`; the
+desktop closes that dialog and the CLI stops waiting for it. Device-list subscriptions keep only
+the latest snapshot; a subscriber is registered before the watcher starts, so it always
+receives a first snapshot. Refresh subscriptions keep the latest 256 notifications.
 
 Settings load/save uses bounded JSON and an atomic same-directory temporary file. Memory is
 updated only after the disk write commits. Invalid settings are reported instead of overwritten.
+The desktop app, CLI and daemon share `settings.json`: reads reload it when its file identity
+(inode, modification time, length; a rename-based save changes the inode) differs from the one
+last read, and an unreadable file keeps the last good settings. `Engine::modify_settings`
+applies a change to the file's current contents while holding the state database's writer lock
+(`BEGIN IMMEDIATE`), so concurrent processes changing different fields keep both changes; a
+failing change saves nothing. `update_settings` replaces every field under the same lock.
+`Engine::set_default_team` chooses or clears an account's team for jobs without a prompt.
 Accounts, teams, certificates, installations, the refresh queue and stored-file records live in
 `state.sqlite3` (schema version 1; a newer schema is refused). Secrets live in the keychain or a
 0600 file (docs/APPLE.md). Installations can be listed, toggled, refreshed and forgotten;
@@ -77,7 +91,7 @@ These are algorithmic bounds; measured throughput, peak RSS, and cancellation la
 ## CLI and primary sources
 
 `sideport` exposes the engine: `inspect`, `export` (ad-hoc, unsigned, original, Apple ID),
-`install`, `run`, `settings`, `account` (list, login, logout, import), `certificates`,
+`install`, `run`, `settings`, `account` (list, login, logout, import, default-team), `certificates`,
 `app-ids`, `registered-devices`, `devices`, `device` (apps, uninstall, profiles,
 remove-profile, pair), `installations`, `installation` (refresh, forget, auto-refresh),
 `refresh-due` and `daemon`. Terminal prompts cover every prompt kind; without a terminal they
@@ -130,12 +144,14 @@ prompt cancellation, subscriber closure, and concurrent progress reduction.
 - A6: SQLite WAL locking serializes processes sharing a data directory. Dependent results:
   one machine UUID and signing key per data directory, consistent installation rows. Probe:
   two-connection metadata agreement and exclusive key creation; multi-process crash tests remain.
-- A4: One Engine process writes a given settings file. Dependent results: serialized settings updates.
-  Probes: restart, invalid JSON, oversized writes, memory/disk preservation. Cross-process locking and
-  settings conflict resolution remain pending.
-- A5: The event consumer drains the job while it runs. Dependent results: practical event-buffer memory.
-  Probe: concurrent callback reduction is tested; prolonged stalled-consumer retention remains to be
-  replaced or bounded explicitly.
+- A4: Every process changing settings uses the engine (so holds the database writer lock) and
+  saves by rename. Dependent results: field-level merging and reload detection. Probes: restart,
+  invalid JSON, oversized writes, memory/disk preservation, two engines on one data directory
+  changing different fields, a failing change, and a corrupted file. An external editor that
+  rewrites the file in place within one timestamp tick at the same length is not detected.
+- A5: Front ends tolerate lost log lines and intermediate progress when they fall 4096 events
+  behind. Dependent results: bounded event memory. Probes: a stalled receiver with 9096 log
+  lines, drop reporting, delayed terminal progress, and always-delivered stages/facts/prompts.
 
 ## Bounded observations
 
@@ -144,7 +160,7 @@ Store/private-service clients, and the remaining full-scope workflows are not co
 ledger retains those requirements. A native ad-hoc fixture does not establish device installability.
 
 Medium impact: asset-catalog icons, icon editing, filename portability, local identity loading in the
-engine, backpressure, cancellation latency, and cross-process settings writes need further work.
+engine and cancellation latency need further work.
 Header-only inspection deliberately leaves unvisited payload CRCs unchecked until preparation.
 It also allows large inputs to be reviewed before paying the full extraction/signing cost.
 

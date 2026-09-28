@@ -423,3 +423,18 @@ async fn syslog_jobs_filter_lines_until_cancelled() {
 
     assert_eq!(lines, ["SpringBoard: App launched", "springboard: second"]);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn every_device_subscriber_receives_a_first_snapshot() {
+    let harness = Harness::new().await;
+    let engine = harness.engine();
+    let wait = std::time::Duration::from_secs(10);
+
+    let first = engine.subscribe_devices();
+    let snapshot = tokio::time::timeout(wait, first.recv()).await.expect("first snapshot").expect("open");
+    assert_eq!(snapshot.iter().map(|device| device.name.as_str()).collect::<Vec<_>>(), ["Fixture iPhone"]);
+
+    let second = engine.subscribe_devices();
+    let cached = tokio::time::timeout(wait, second.recv()).await.expect("cached snapshot").expect("open");
+    assert_eq!(cached, snapshot);
+}

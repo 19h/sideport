@@ -179,6 +179,13 @@ async fn device_questions_retry_or_close_when_the_job_continues(cx: &mut TestApp
     assert!(cx.read(|cx| view.read(cx).logs.iter().any(|(_, message)| message.contains("continuing"))));
 
     let reply = ask(&view, &mut cx, wait_for_device());
+    event(&view, &mut cx, JobEvent::PromptWithdrawn { id: 2 });
+    assert!(has_dialog(&view, &mut cx), "withdrawing another question keeps this one");
+    event(&view, &mut cx, JobEvent::PromptWithdrawn { id: 1 });
+    assert!(!has_dialog(&view, &mut cx), "the engine withdrew the question");
+    assert_eq!(reply.await.expect("reply"), PromptReply::Cancel);
+
+    let reply = ask(&view, &mut cx, wait_for_device());
     event(&view, &mut cx, JobEvent::Stage(Stage::Installing));
     assert!(!has_dialog(&view, &mut cx));
     assert_eq!(reply.await.expect("reply"), PromptReply::Cancel);

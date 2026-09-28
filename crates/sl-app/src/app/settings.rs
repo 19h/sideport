@@ -155,11 +155,14 @@ fn whole_number(text: &str, range: std::ops::RangeInclusive<u32>, label: &str) -
 
 impl Sideport {
     pub(super) fn theme(&mut self, preference: ThemePreference, window: &mut Window, cx: &mut Context<Self>) {
-        let mut settings = self.engine.settings();
-        settings.theme = preference;
+        let saved = self.engine.modify_settings(|settings| {
+            settings.theme = preference;
 
-        match self.engine.update_settings(settings) {
-            Ok(()) => apply_theme(preference, window, cx),
+            Ok(())
+        });
+
+        match saved {
+            Ok(_) => apply_theme(preference, window, cx),
             Err(error) => self.error = Some(error.to_string()),
         }
 
@@ -167,24 +170,21 @@ impl Sideport {
     }
 
     pub(super) fn save_settings(&mut self, cx: &mut Context<Self>) {
-        let mut settings = self.engine.settings();
+        // The form applies to the stored settings as they are now; an invalid form saves nothing.
+        let form = &self.settings;
+        let saved =
+            self.engine.modify_settings(|settings| form.apply(settings, cx).map_err(sl_engine::EngineError::Other));
 
-        if let Err(error) = self.settings.apply(&mut settings, cx) {
-            self.settings.notice = None;
-            self.error = Some(error);
-            cx.notify();
-            return;
-        }
-
-        let remember = settings.remember_passwords;
-
-        match self.engine.update_settings(settings) {
-            Ok(()) => {
+        match saved {
+            Ok(settings) => {
                 self.settings.notice = Some("Settings saved.".into());
-                self.accounts.remember = remember;
+                self.accounts.remember = settings.remember_passwords;
                 self.error = None;
             }
-            Err(error) => self.error = Some(error.to_string()),
+            Err(error) => {
+                self.settings.notice = None;
+                self.error = Some(error.to_string());
+            }
         }
 
         cx.notify();

@@ -186,6 +186,25 @@ impl Demo {
         Ok(account)
     }
 
+    pub(crate) fn set_default_team(&self, apple_id: &str, team_id: Option<String>) -> Result<()> {
+        let mut state = self.state.lock();
+        let account = state
+            .accounts
+            .iter_mut()
+            .find(|account| account.apple_id == apple_id)
+            .ok_or_else(|| EngineError::Auth(format!("{apple_id} is not signed in")))?;
+
+        if let Some(team_id) = &team_id
+            && !account.teams.iter().any(|team| &team.team_id == team_id)
+        {
+            return Err(EngineError::Other(format!("{apple_id} has no team {team_id}")));
+        }
+
+        account.default_team = team_id;
+
+        Ok(())
+    }
+
     pub(crate) fn logout(&self, apple_id: &str) {
         self.state.lock().accounts.retain(|a| a.apple_id != apple_id);
     }

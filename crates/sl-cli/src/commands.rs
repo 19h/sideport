@@ -219,25 +219,31 @@ fn anisette(engine: &Engine, remote: Option<String>, json: bool) -> Result<()> {
 }
 
 fn settings(engine: &Engine, command: SettingsCommand, json: bool) -> Result<()> {
-    let mut settings = engine.settings();
+    let change: Box<dyn FnOnce(&mut sl_engine::Settings)> = match command {
+        SettingsCommand::Show => {
+            let settings = engine.settings();
 
-    match command {
-        SettingsCommand::Show => {}
+            return print(&settings, json, |settings| println!("{settings:#?}"));
+        }
 
         SettingsCommand::Anisette { remote, local } => {
-            settings.anisette = match (remote, local) {
+            let anisette = match (remote, local) {
                 (Some(url), _) => AnisetteSetting::Remote { url },
                 (None, true) => AnisetteSetting::Local,
                 (None, false) => bail!("pass --remote URL or --local"),
             };
+
+            Box::new(move |settings| settings.anisette = anisette)
         }
 
         SettingsCommand::AlternateAnisette { remote, none } => {
-            settings.alternate_anisette = match (remote, none) {
+            let alternate = match (remote, none) {
                 (Some(url), _) => Some(AnisetteSetting::Remote { url }),
                 (None, true) => None,
                 (None, false) => bail!("pass --remote URL or --none"),
             };
+
+            Box::new(move |settings| settings.alternate_anisette = alternate)
         }
 
         SettingsCommand::Autostart { enable, disable } => {
@@ -254,16 +260,22 @@ fn settings(engine: &Engine, command: SettingsCommand, json: bool) -> Result<()>
         }
 
         SettingsCommand::Refresh { enabled, threshold_hours, interval_minutes, allow_network } => {
-            let refresh = &mut settings.refresh;
+            Box::new(move |settings| {
+                let refresh = &mut settings.refresh;
 
-            refresh.enabled = enabled.unwrap_or(refresh.enabled);
-            refresh.threshold_hours = threshold_hours.unwrap_or(refresh.threshold_hours);
-            refresh.check_interval_minutes = interval_minutes.unwrap_or(refresh.check_interval_minutes).max(1);
-            refresh.allow_network = allow_network.unwrap_or(refresh.allow_network);
+                refresh.enabled = enabled.unwrap_or(refresh.enabled);
+                refresh.threshold_hours = threshold_hours.unwrap_or(refresh.threshold_hours);
+                refresh.check_interval_minutes = interval_minutes.unwrap_or(refresh.check_interval_minutes).max(1);
+                refresh.allow_network = allow_network.unwrap_or(refresh.allow_network);
+            })
         }
-    }
+    };
 
-    engine.update_settings(settings.clone())?;
+    let settings = engine.modify_settings(|settings| {
+        change(settings);
+
+        Ok(())
+    })?;
 
     print(&settings, json, |settings| println!("{settings:#?}"))
 }
@@ -304,6 +316,15 @@ fn account(engine: &Engine, command: AccountCommand, json: bool) -> Result<()> {
             block_on(engine.logout(apple_id.clone()))?;
 
             print(&serde_json::json!({ "signed_out": apple_id }), json, |_| println!("Signed out {apple_id}"))
+        }
+
+        AccountCommand::DefaultTeam { apple_id, team_id, ask: _ } => {
+            engine.set_default_team(&apple_id, team_id.clone())?;
+
+            print(&serde_json::json!({ "apple_id": apple_id, "default_team": team_id }), json, |_| match &team_id {
+                Some(team_id) => println!("Jobs for {apple_id} use team {team_id}"),
+                None => println!("Jobs for {apple_id} ask for a team"),
+            })
         }
 
         AccountCommand::Import { path } => {

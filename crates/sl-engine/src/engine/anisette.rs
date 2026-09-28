@@ -55,7 +55,7 @@ pub(super) fn provider(inner: &Inner, setting: &AnisetteSetting) -> Result<Arc<d
 /// The primary provider for a job. A local provider is probed; if it cannot produce headers,
 /// the alternate provider is used instead, else the job fails with guidance.
 pub(super) async fn primary(inner: &Inner, context: Option<&JobContext>) -> Result<Arc<dyn AnisetteProvider>> {
-    let settings = inner.settings.read().clone();
+    let settings = inner.settings();
     let configured = provider(inner, &settings.anisette)?;
 
     if settings.anisette != AnisetteSetting::Local {
@@ -83,7 +83,7 @@ pub(super) async fn primary(inner: &Inner, context: Option<&JobContext>) -> Resu
 
 /// The optional alternate provider tried after a GSA anisette mismatch (-36607).
 pub(super) fn alternate(inner: &Inner) -> Result<Option<Arc<dyn AnisetteProvider>>> {
-    let settings = inner.settings.read().clone();
+    let settings = inner.settings();
 
     settings.alternate_anisette.as_ref().map(|setting| provider(inner, setting)).transpose()
 }

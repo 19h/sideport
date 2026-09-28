@@ -220,6 +220,8 @@ fn dropping_a_job_handle_cancels_a_pending_prompt_and_closes_its_events() {
                 assert!(cancellation.is_cancelled());
 
                 // Keep the prompt alive: cancellation must finish without an answer or drop.
+                let withdrawn = events.recv().await.expect("withdrawal");
+                assert!(matches!(withdrawn, JobEvent::PromptWithdrawn { id } if id == prompt.id));
                 assert!(events.recv().await.is_err());
                 drop(prompt);
                 break;
@@ -367,4 +369,45 @@ fn remote_sources_are_downloaded_verified_and_removed_after_the_job() {
         engine.start(spec("sideloadly:?c=US&bi=com.example.app".into(), None, SigningMode::Unsigned)).result(),
     );
     assert!(matches!(store, Err(EngineError::Unsupported(_))));
+}
+
+#[test]
+fn engines_sharing_a_data_directory_keep_each_others_setting_changes() {
+    let temporary = tempfile::tempdir().expect("tempdir");
+    let desktop = engine(temporary.path());
+    let daemon = engine(temporary.path());
+
+    assert_eq!(daemon.settings().theme, sl_engine::ThemePreference::System);
+
+    desktop
+        .modify_settings(|settings| {
+            settings.theme = sl_engine::ThemePreference::Dark;
+
+            Ok(())
+        })
+        .expect("desktop change");
+
+    assert_eq!(daemon.settings().theme, sl_engine::ThemePreference::Dark, "the other engine reloads");
+
+    daemon
+        .modify_settings(|settings| {
+            settings.refresh.threshold_hours = 30;
+
+            Ok(())
+        })
+        .expect("daemon change");
+
+    let merged = desktop.settings();
+    assert_eq!((merged.theme, merged.refresh.threshold_hours), (sl_engine::ThemePreference::Dark, 30));
+
+    let refused = desktop.modify_settings(|settings| {
+        settings.stream_upload = !settings.stream_upload;
+
+        Err(EngineError::Other("invalid form".into()))
+    });
+    assert!(refused.is_err());
+    assert_eq!(daemon.settings(), merged, "a failed change saves nothing");
+
+    std::fs::write(temporary.path().join("data/settings.json"), b"{ not json").expect("corrupt");
+    assert_eq!(desktop.settings(), merged, "unreadable settings keep the last good ones");
 }

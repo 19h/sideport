@@ -210,6 +210,14 @@ enum AccountCommand {
     Import {
         path: Option<PathBuf>,
     },
+    /// Use this team for jobs without asking; `--ask` asks again at the next job.
+    DefaultTeam {
+        apple_id: String,
+        #[arg(required_unless_present = "ask")]
+        team_id: Option<String>,
+        #[arg(long, conflicts_with = "team_id")]
+        ask: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

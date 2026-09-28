@@ -603,6 +603,7 @@ impl Sideport {
             JobEvent::Progress { done, total } => self.progress = Some((done, total)),
             JobEvent::Log { level, message } => self.add_log(level, message),
             JobEvent::Fact(fact) => self.record_fact(fact),
+            JobEvent::PromptWithdrawn { .. } => {}
             JobEvent::Prompt(prompt) => {
                 let device_name = match &prompt.kind {
                     PromptKind::WaitForDevice { udid, .. } => self.device_name(udid),
@@ -625,8 +626,9 @@ impl Sideport {
     }
 
     /// A job blocked on a question emits nothing until it is answered, except when it can
-    /// continue on its own: the engine stops waiting for a device once the device returns. Any
-    /// later event therefore makes a device question stale, and a new stage ends any question.
+    /// continue on its own: the engine withdraws the question then (for example when a device
+    /// returns). Any later event also makes a device question stale, and a new stage ends any
+    /// question.
     fn dismiss_stale_prompt(&mut self, event: &JobEvent, window: &mut Window) {
         let Some(Dialog::Prompt(dialog)) = &self.dialog else {
             return;
@@ -634,7 +636,13 @@ impl Sideport {
 
         let waiting_for_device = matches!(dialog.prompt.kind, PromptKind::WaitForDevice { .. });
 
-        if !waiting_for_device && !matches!(event, JobEvent::Stage(_)) {
+        let stale = match event {
+            JobEvent::PromptWithdrawn { id } => *id == dialog.prompt.id,
+            JobEvent::Stage(_) => true,
+            _ => waiting_for_device,
+        };
+
+        if !stale {
             return;
         }
 
@@ -642,7 +650,9 @@ impl Sideport {
         self.dialog_error = None;
         self.focus.focus(window);
 
-        if waiting_for_device {
+        let cancelled = self.cancellation.as_ref().is_some_and(|token| token.is_cancelled());
+
+        if waiting_for_device && !cancelled {
             self.add_log(LogLevel::Info, "The device is available again; continuing.".into());
         }
     }

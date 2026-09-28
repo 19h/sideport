@@ -196,7 +196,12 @@ async fn install_job(inner: Arc<Inner>, context: JobContext, spec: JobSpec) -> R
         chunk,
     };
 
-    let delegate = JobDelegate { context: context.clone(), backend: backend.clone(), phase: AtomicU8::new(0) };
+    let delegate = JobDelegate {
+        context: context.clone(),
+        backend: backend.clone(),
+        device_name: if values.name.is_empty() { udid.clone() } else { values.name.clone() },
+        phase: AtomicU8::new(0),
+    };
     let connector: &dyn sl_device::Connector = backend.as_ref();
 
     let installed = install::install(connector, prepared.package.as_ref(), request, &delegate).await;
@@ -567,6 +572,8 @@ impl StreamReader {
 struct JobDelegate {
     context: JobContext,
     backend: Arc<dyn Backend>,
+    /// Shown while waiting for the device to return; the UDID when lockdown gave no name.
+    device_name: String,
     /// 0 = none yet, 1 = uploading, 2 = installing.
     phase: AtomicU8,
 }
@@ -625,7 +632,8 @@ impl Delegate for JobDelegate {
 
     fn await_device<'a>(&'a self, udid: &'a str, message: String) -> BoxFuture<'a, DeviceWait> {
         async move {
-            let prompt = PromptKind::WaitForDevice { udid: udid.into(), device_name: udid.into(), reason: message };
+            let prompt =
+                PromptKind::WaitForDevice { udid: udid.into(), device_name: self.device_name.clone(), reason: message };
 
             let returned = async {
                 loop {

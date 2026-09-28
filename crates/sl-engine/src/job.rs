@@ -1,7 +1,12 @@
 //! Job handles, events and interactive prompts. CONTRACT: front-ends consume these.
 //!
-//! A job runs on the engine's runtime and reports through an unbounded event channel. Everything here
-//! is executor-agnostic (`async-channel`, `futures::channel::oneshot`), so a gpui view can await it.
+//! A job runs on the engine's runtime and reports through an event channel. Everything here is
+//! executor-agnostic (`async-channel`, `futures::channel::oneshot`), so a gpui view can await it.
+//!
+//! Log lines and progress are lossy once [`EVENT_BACKLOG`] events wait unread: a stalled front end
+//! then loses them (reported by one warning when it catches up, with the latest progress) instead
+//! of growing memory without bound. Stages, facts and prompts are always delivered; a job emits a
+//! bounded number of them.
 
 use crate::error::EngineError;
 use crate::types::TeamSummary;
@@ -86,6 +91,11 @@ pub enum JobEvent {
     },
     Fact(Fact),
     Prompt(Prompt),
+    /// The job stopped waiting for the answer to prompt `id` (it continued on its own, for
+    /// example because the device returned, or it was cancelled). Close that question.
+    PromptWithdrawn {
+        id: u64,
+    },
 }
 
 /// Choice offered by [`PromptKind::ChooseTeam`].
@@ -222,6 +232,9 @@ impl<T> Drop for JobHandle<T> {
     }
 }
 
+/// Unread events after which log lines and progress are dropped.
+pub const EVENT_BACKLOG: usize = 4096;
+
 /// Producer side used by job implementations.
 #[derive(Debug, Clone)]
 pub struct JobContext {
@@ -229,6 +242,14 @@ pub struct JobContext {
     cancel: CancellationToken,
     next_prompt: std::sync::Arc<std::sync::atomic::AtomicU64>,
     progress: Arc<parking_lot::Mutex<ProgressState>>,
+    backlog: Arc<parking_lot::Mutex<Backlog>>,
+}
+
+/// Lossy events dropped while the receiver was behind.
+#[derive(Debug, Default)]
+struct Backlog {
+    dropped_logs: u64,
+    pending_progress: Option<(u64, u64)>,
 }
 
 #[derive(Debug, Default)]
@@ -243,9 +264,62 @@ impl JobContext {
     pub fn channel() -> (Self, async_channel::Receiver<JobEvent>, CancellationToken) {
         let (tx, rx) = async_channel::unbounded();
         let cancel = CancellationToken::new();
-        let ctx =
-            Self { events: tx, cancel: cancel.clone(), next_prompt: Default::default(), progress: Default::default() };
+        let ctx = Self {
+            events: tx,
+            cancel: cancel.clone(),
+            next_prompt: Default::default(),
+            progress: Default::default(),
+            backlog: Default::default(),
+        };
+
         (ctx, rx, cancel)
+    }
+
+    /// Deliver an event that must not be lost, after reporting what was dropped before it.
+    fn deliver(&self, event: JobEvent) {
+        self.flush_backlog();
+
+        let _ = self.events.try_send(event);
+    }
+
+    /// Deliver a log line or progress update unless the receiver is [`EVENT_BACKLOG`] behind.
+    fn deliver_lossy(&self, event: JobEvent) {
+        let mut backlog = self.backlog.lock();
+
+        if self.events.len() >= EVENT_BACKLOG {
+            match event {
+                JobEvent::Progress { done, total } => backlog.pending_progress = Some((done, total)),
+                _ => backlog.dropped_logs += 1,
+            }
+
+            return;
+        }
+
+        Self::flush(&self.events, &mut backlog);
+
+        if matches!(event, JobEvent::Progress { .. }) {
+            backlog.pending_progress = None;
+        }
+
+        let _ = self.events.try_send(event);
+    }
+
+    fn flush_backlog(&self) {
+        Self::flush(&self.events, &mut self.backlog.lock());
+    }
+
+    fn flush(events: &async_channel::Sender<JobEvent>, backlog: &mut Backlog) {
+        if backlog.dropped_logs > 0 {
+            let count = std::mem::take(&mut backlog.dropped_logs);
+            let noun = if count == 1 { "message was" } else { "messages were" };
+            let message = format!("{count} log {noun} dropped because the display fell behind.");
+
+            let _ = events.try_send(JobEvent::Log { level: LogLevel::Warn, message });
+        }
+
+        if let Some((done, total)) = backlog.pending_progress.take() {
+            let _ = events.try_send(JobEvent::Progress { done, total });
+        }
     }
 
     pub fn log(&self, level: LogLevel, message: impl Into<String>) {
@@ -256,7 +330,7 @@ impl JobContext {
             LogLevel::Warn => tracing::warn!("{message}"),
             LogLevel::Error => tracing::error!("{message}"),
         }
-        let _ = self.events.try_send(JobEvent::Log { level, message });
+        self.deliver_lossy(JobEvent::Log { level, message });
     }
 
     pub fn info(&self, message: impl Into<String>) {
@@ -269,7 +343,8 @@ impl JobContext {
 
     pub fn stage(&self, stage: Stage) {
         *self.progress.lock() = ProgressState::default();
-        let _ = self.events.try_send(JobEvent::Stage(stage));
+        self.backlog.lock().pending_progress = None;
+        self.deliver(JobEvent::Stage(stage));
     }
 
     pub fn progress(&self, done: u64, total: u64) {
@@ -288,13 +363,13 @@ impl JobContext {
 
         if should_send {
             let done = state.maximum;
-            let _ = self.events.try_send(JobEvent::Progress { done, total });
+            self.deliver_lossy(JobEvent::Progress { done, total });
             state.last_sent = Some((now, done));
         }
     }
 
     pub fn fact(&self, fact: Fact) {
-        let _ = self.events.try_send(JobEvent::Fact(fact));
+        self.deliver(JobEvent::Fact(fact));
     }
 
     pub fn is_cancelled(&self) -> bool {
@@ -314,13 +389,132 @@ impl JobContext {
     pub async fn ask(&self, kind: PromptKind) -> Result<PromptReply, EngineError> {
         let id = self.next_prompt.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let (prompt, rx) = Prompt::new(id, kind);
+
+        self.flush_backlog();
         self.events.send(JobEvent::Prompt(prompt)).await.map_err(|_| EngineError::Cancelled)?;
+
+        // Withdraw the question unless an answer arrives, including when this future is dropped.
+        let mut withdrawal = Withdrawal { context: self, id, answered: false };
+
         tokio::select! {
-            reply = rx => match reply {
-                Ok(PromptReply::Cancel) | Err(_) => Err(EngineError::Cancelled),
-                Ok(reply) => Ok(reply),
+            reply = rx => {
+                withdrawal.answered = true;
+
+                match reply {
+                    Ok(PromptReply::Cancel) | Err(_) => Err(EngineError::Cancelled),
+                    Ok(reply) => Ok(reply),
+                }
             },
             _ = self.cancel.cancelled() => Err(EngineError::Cancelled),
         }
+    }
+}
+
+/// Announces [`JobEvent::PromptWithdrawn`] when a question is abandoned unanswered.
+struct Withdrawal<'a> {
+    context: &'a JobContext,
+    id: u64,
+    answered: bool,
+}
+
+impl Drop for Withdrawal<'_> {
+    fn drop(&mut self) {
+        if !self.answered {
+            self.context.deliver(JobEvent::PromptWithdrawn { id: self.id });
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::FutureExt;
+
+    fn drain(events: &async_channel::Receiver<JobEvent>) -> Vec<JobEvent> {
+        std::iter::from_fn(|| events.try_recv().ok()).collect()
+    }
+
+    #[test]
+    fn a_stalled_receiver_bounds_logs_and_progress_but_keeps_stages_and_facts() {
+        let (context, events, _cancel) = JobContext::channel();
+        let lines = EVENT_BACKLOG + 5000;
+
+        context.stage(Stage::Uploading);
+
+        for line in 0..lines {
+            context.info(format!("line {line}"));
+        }
+
+        context.fact(Fact::EncryptedBinary);
+        context.progress(7, 10);
+        context.stage(Stage::Installing);
+
+        // The backlog, the drop report, the fact and the second stage.
+        assert_eq!(events.len(), EVENT_BACKLOG + 3);
+
+        let first = drain(&events);
+        let dropped = lines - (EVENT_BACKLOG - 1);
+
+        assert!(matches!(first.first(), Some(JobEvent::Stage(Stage::Uploading))));
+        assert!(matches!(first.last(), Some(JobEvent::Stage(Stage::Installing))));
+        assert!(first.iter().any(|event| matches!(event, JobEvent::Fact(Fact::EncryptedBinary))));
+
+        let report = first.iter().find_map(|event| match event {
+            JobEvent::Log { level: LogLevel::Warn, message } => Some(message.clone()),
+            _ => None,
+        });
+        assert_eq!(report, Some(format!("{dropped} log messages were dropped because the display fell behind.")));
+        assert!(
+            !first.iter().any(|event| matches!(event, JobEvent::Progress { .. })),
+            "progress of a finished stage is not replayed"
+        );
+
+        context.info("after");
+        assert!(matches!(drain(&events).as_slice(), [JobEvent::Log { message, .. }] if message == "after"));
+    }
+
+    #[test]
+    fn the_latest_dropped_progress_is_delivered_when_the_receiver_catches_up() {
+        let (context, events, _cancel) = JobContext::channel();
+
+        for line in 0..EVENT_BACKLOG {
+            context.info(format!("line {line}"));
+        }
+
+        context.progress(10, 10);
+        drain(&events);
+        context.info("after");
+
+        let delivered = drain(&events);
+        assert!(matches!(delivered.as_slice(), [JobEvent::Progress { done: 10, total: 10 }, JobEvent::Log { .. }]));
+    }
+
+    #[test]
+    fn a_question_the_job_stops_waiting_for_is_withdrawn() {
+        let (context, events, cancel) = JobContext::channel();
+
+        let mut question = Box::pin(context.ask(PromptKind::SaveFile { suggested_name: "App.ipa".into() }));
+        assert!(question.as_mut().now_or_never().is_none());
+
+        let Ok(JobEvent::Prompt(prompt)) = events.try_recv() else { panic!("prompt") };
+        drop(question);
+
+        assert!(matches!(events.try_recv(), Ok(JobEvent::PromptWithdrawn { id }) if id == prompt.id));
+
+        let answered = context.ask(PromptKind::SaveFile { suggested_name: "App.ipa".into() });
+        let responder = async {
+            let Ok(JobEvent::Prompt(prompt)) = events.recv().await else { panic!("prompt") };
+            prompt.answer(PromptReply::Path("out.ipa".into()));
+        };
+
+        let (reply, ()) = futures::executor::block_on(futures::future::join(answered, responder));
+        assert_eq!(reply.expect("reply"), PromptReply::Path("out.ipa".into()));
+        assert!(events.try_recv().is_err(), "an answered question is not withdrawn");
+
+        cancel.cancel();
+        let cancelled = futures::executor::block_on(context.ask(PromptKind::SaveFile { suggested_name: "A".into() }));
+        assert!(matches!(cancelled, Err(EngineError::Cancelled)));
+        assert!(matches!(events.try_recv(), Ok(JobEvent::Prompt(_))));
+        assert!(matches!(events.try_recv(), Ok(JobEvent::PromptWithdrawn { .. })));
     }
 }

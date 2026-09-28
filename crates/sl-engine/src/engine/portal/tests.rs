@@ -230,3 +230,22 @@ async fn portal_service_errors_keep_the_code_and_redact_response_details() {
     assert!(matches!(&error, EngineError::Portal { code: 7460, .. }));
     assert!(!error.to_string().contains("private-server-detail"));
 }
+
+#[tokio::test]
+async fn a_default_team_is_validated_persisted_and_can_be_cleared() {
+    let server = MockServer::start().await;
+    let (engine, _directory) = engine(&server, vec![team("FIRST"), team("SECOND")]);
+    let stored = |engine: &Engine| engine.inner.store.accounts().expect("stored accounts")[0].default_team.clone();
+
+    engine.set_default_team(APPLE_ID, Some("SECOND".into())).expect("known team");
+    assert_eq!(engine.accounts().expect("accounts")[0].default_team.as_deref(), Some("SECOND"));
+    assert_eq!(stored(&engine).as_deref(), Some("SECOND"));
+
+    assert!(engine.set_default_team(APPLE_ID, Some("OTHER".into())).is_err(), "unknown teams are refused");
+    assert!(engine.set_default_team("other@example.test", None).is_err(), "unknown accounts are refused");
+    assert_eq!(stored(&engine).as_deref(), Some("SECOND"));
+
+    engine.set_default_team(APPLE_ID, None).expect("clear");
+    assert_eq!(engine.accounts().expect("accounts")[0].default_team, None);
+    assert_eq!(stored(&engine), None);
+}

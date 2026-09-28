@@ -77,7 +77,7 @@ pub(super) fn due(installations: &[Installation], threshold_hours: u32, now: chr
 
 /// One scheduler pass: queue due installations whose device is reachable, then run the queue.
 pub(super) async fn tick(inner: &Arc<Inner>) -> Result<usize> {
-    let settings = inner.settings.read().refresh.clone();
+    let settings = inner.settings().refresh;
 
     if !settings.enabled {
         return Ok(0);
@@ -162,7 +162,7 @@ pub(super) fn start(inner: &Arc<Inner>) {
                 }
 
                 let _ = tick(&inner).await;
-                let minutes = inner.settings.read().refresh.check_interval_minutes.max(1);
+                let minutes = inner.settings().refresh.check_interval_minutes.max(1);
 
                 std::time::Duration::from_secs(u64::from(minutes) * 60)
             };
