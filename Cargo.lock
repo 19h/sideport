@@ -6349,12 +6349,16 @@ dependencies = [
  "rfd",
  "serde_json",
  "sl-bundle",
+ "sl-device",
  "sl-engine",
  "sl-macho",
+ "sl-testkit",
  "tempfile",
+ "tokio",
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "wiremock",
 ]
 
 [[package]]

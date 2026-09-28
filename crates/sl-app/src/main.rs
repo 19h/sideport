@@ -6,20 +6,26 @@ use gpui::{
     WindowOptions, actions, px, size,
 };
 use gpui_component::Root;
-use sl_app::{Assets, CancelJob, ExportApp, OpenApp, Sideport, apply_theme};
+use sl_app::{
+    Assets, CancelJob, ExportApp, OpenApp, ShowAccounts, ShowApp, ShowDevices, ShowInstallations, ShowSettings,
+    Sideport, apply_theme,
+};
 use sl_engine::{Engine, EngineConfig};
 use std::{cell::RefCell, path::PathBuf, rc::Rc};
 
 actions!(sideport, [Quit]);
 
 #[derive(Parser)]
-#[command(name = "Sideport", about = "Prepare and export apps")]
+#[command(name = "Sideport", about = "Prepare, sign, install, and refresh apps")]
 struct Arguments {
     /// IPA, app ZIP, or .app to open at startup.
     source: Option<PathBuf>,
-    /// Override the directory containing desktop settings.
+    /// Override the directory containing desktop settings and account state.
     #[arg(long)]
     data_dir: Option<PathBuf>,
+    /// Use simulated accounts, devices, and installations (no network or device access).
+    #[arg(long)]
+    demo: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -29,7 +35,8 @@ fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    let engine = Engine::new(EngineConfig { data_dir: arguments.data_dir, ..EngineConfig::default() })?;
+    let config = EngineConfig { data_dir: arguments.data_dir, demo: arguments.demo, ..EngineConfig::default() };
+    let engine = Engine::new(config)?;
     let startup_error = Rc::new(RefCell::new(None));
     let error_slot = startup_error.clone();
 
@@ -101,6 +108,11 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-o", OpenApp, Some("Sideport")),
         KeyBinding::new("cmd-e", ExportApp, Some("Sideport")),
         KeyBinding::new("cmd-.", CancelJob, Some("Sideport")),
+        KeyBinding::new("cmd-1", ShowApp, Some("Sideport")),
+        KeyBinding::new("cmd-2", ShowAccounts, Some("Sideport")),
+        KeyBinding::new("cmd-3", ShowDevices, Some("Sideport")),
+        KeyBinding::new("cmd-4", ShowInstallations, Some("Sideport")),
+        KeyBinding::new("cmd-,", ShowSettings, Some("Sideport")),
         KeyBinding::new("cmd-q", Quit, None),
     ]);
 
@@ -109,6 +121,11 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-o", OpenApp, Some("Sideport")),
         KeyBinding::new("ctrl-e", ExportApp, Some("Sideport")),
         KeyBinding::new("ctrl-.", CancelJob, Some("Sideport")),
+        KeyBinding::new("ctrl-1", ShowApp, Some("Sideport")),
+        KeyBinding::new("ctrl-2", ShowAccounts, Some("Sideport")),
+        KeyBinding::new("ctrl-3", ShowDevices, Some("Sideport")),
+        KeyBinding::new("ctrl-4", ShowInstallations, Some("Sideport")),
+        KeyBinding::new("ctrl-,", ShowSettings, Some("Sideport")),
         KeyBinding::new("ctrl-q", Quit, None),
     ]);
 }
@@ -117,12 +134,19 @@ fn set_menus(cx: &mut App) {
     use gpui_component::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
 
     cx.set_menus(vec![
-        Menu { name: "Sideport".into(), items: vec![MenuItem::action("Quit Sideport", Quit)] },
+        Menu {
+            name: "Sideport".into(),
+            items: vec![
+                MenuItem::action("Settings…", ShowSettings),
+                MenuItem::separator(),
+                MenuItem::action("Quit Sideport", Quit),
+            ],
+        },
         Menu {
             name: "File".into(),
             items: vec![
                 MenuItem::action("Open app…", OpenApp),
-                MenuItem::action("Export IPA…", ExportApp),
+                MenuItem::action("Export or install", ExportApp),
                 MenuItem::separator(),
                 MenuItem::action("Cancel operation", CancelJob),
             ],
@@ -137,6 +161,15 @@ fn set_menus(cx: &mut App) {
                 MenuItem::os_action("Copy", Copy, OsAction::Copy),
                 MenuItem::os_action("Paste", Paste, OsAction::Paste),
                 MenuItem::os_action("Select all", SelectAll, OsAction::SelectAll),
+            ],
+        },
+        Menu {
+            name: "View".into(),
+            items: vec![
+                MenuItem::action("App", ShowApp),
+                MenuItem::action("Accounts", ShowAccounts),
+                MenuItem::action("Devices", ShowDevices),
+                MenuItem::action("Installations", ShowInstallations),
             ],
         },
     ]);

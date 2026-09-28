@@ -1,16 +1,21 @@
-use super::{CancelJob, Dialog, ExportApp, OpenApp, Sideport};
-use crate::ExportMode;
+use super::{
+    CancelJob, Dialog, ExportApp, OpenApp, Section, ShowAccounts, ShowApp, ShowDevices, ShowInstallations,
+    ShowSettings, Sideport,
+    widgets::{field, format_bytes, format_time, icon_placeholder, section_title},
+};
+use crate::{ExportMode, IdentifierPolicy, prompt::team_kind};
 use gpui::{
-    App, Context, Div, Entity, ExternalPaths, FontWeight, IntoElement, Render, Window, div, img, prelude::*, px, rgba,
+    AnyElement, App, Context, Div, ExternalPaths, FontWeight, IntoElement, Render, Window, div, img, prelude::*, px,
+    rgba,
 };
 use gpui_component::{
     ActiveTheme, Disableable, Selectable,
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
-    input::{Input, InputState},
+    input::Input,
     progress::Progress,
 };
-use sl_engine::{ExtensionRemoval, LogLevel, PromptKind, PromptReply, Stage, ThemePreference};
+use sl_engine::{ExtensionRemoval, LogLevel, PromptKind, PromptReply, Stage};
 
 impl Sideport {
     fn render_empty(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -58,26 +63,17 @@ impl Sideport {
     }
 
     fn render_editor(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let disabled = self.busy || self.picking || self.dialog.is_some() || self.mode == ExportMode::Original;
+        let disabled = self.occupied() || self.mode == ExportMode::Original;
+        let identifier_locked =
+            disabled || (self.mode == ExportMode::AppleId && self.draft.identifier_policy != IdentifierPolicy::Custom);
         let Some(app) = &self.app else {
             return div();
         };
 
-        let icon =
-            self.icon.clone().map(|icon| img(icon).size(px(80.)).rounded_2xl().into_any_element()).unwrap_or_else(
-                || {
-                    div()
-                        .size(px(80.))
-                        .rounded_2xl()
-                        .bg(cx.theme().muted)
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .text_3xl()
-                        .child("A")
-                        .into_any_element()
-                },
-            );
+        let icon = match self.icon.clone() {
+            Some(icon) => img(icon).size(px(80.)).rounded_2xl().into_any_element(),
+            None => icon_placeholder(&app.name, 80., cx).into_any_element(),
+        };
         let border = cx.theme().border;
         let background = cx.theme().popover;
         let card = || {
@@ -109,34 +105,9 @@ impl Sideport {
                 Button::new("change-app")
                     .outline()
                     .label("Change…")
-                    .disabled(self.busy || self.picking || self.dialog.is_some())
+                    .disabled(self.occupied())
                     .on_click(cx.listener(|view, _, window, cx| view.open_app(&OpenApp, window, cx))),
             );
-
-        let mode = div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(section_title("Export format"))
-            .child(div().flex().gap_2().children(
-                [ExportMode::Unsigned, ExportMode::AdHoc, ExportMode::Original].into_iter().enumerate().map(
-                    |(index, mode)| {
-                        Button::new(("mode", index))
-                            .label(mode.label())
-                            .outline()
-                            .selected(self.mode == mode)
-                            .debug_selector(move || format!("mode:{}", mode.label()))
-                            .disabled(self.busy || self.picking || self.dialog.is_some())
-                            .on_click(cx.listener(move |view, _, window, cx| {
-                                view.mode = mode;
-                                view.error = None;
-                                view.focus.focus(window);
-                                cx.notify();
-                            }))
-                    },
-                ),
-            ))
-            .child(div().text_sm().text_color(cx.theme().muted_foreground).child(self.mode.description()));
 
         let metadata = div()
             .flex()
@@ -146,7 +117,7 @@ impl Sideport {
             .child(div().flex().gap_4().child(field("Display name", &self.fields.name, disabled)).child(field(
                 "Bundle identifier",
                 &self.fields.identifier,
-                disabled,
+                identifier_locked,
             )))
             .child(
                 div()
@@ -210,7 +181,9 @@ impl Sideport {
                         .child("Encrypted executable. Re-signing preserves its encryption."),
                 )
             }))
-            .child(card().child(mode).child(metadata).child(toggles))
+            .child(self.render_signing(cx))
+            .child(self.render_destination(cx))
+            .child(card().child(metadata).child(toggles))
             .when(!app.extensions.is_empty(), |this| this.child(card().child(self.render_extensions(cx, disabled))))
             .child(card().child(self.render_injections(cx, disabled)))
             .child(
@@ -226,7 +199,6 @@ impl Sideport {
                     )
                     .when(self.advanced_open, |this| this.child(self.render_advanced(cx, disabled))),
             )
-            .when(self.logs_open, |this| this.child(self.render_logs(cx)))
     }
 
     fn render_extensions(&self, cx: &mut Context<Self>, disabled: bool) -> impl IntoElement {
@@ -379,6 +351,9 @@ impl Sideport {
     fn render_logs(&self, cx: &App) -> impl IntoElement {
         div()
             .id("logs")
+            .max_w(px(1100.))
+            .mx_auto()
+            .mt_5()
             .max_h(px(240.))
             .overflow_y_scroll()
             .rounded_lg()
@@ -395,8 +370,53 @@ impl Sideport {
             }))
     }
 
+    /// Team, identifier, quota and profile validity reported by the job.
+    fn render_facts(&self, cx: &App) -> Option<Div> {
+        let facts = &self.facts;
+        let chip = |selector: &'static str, text: String| {
+            div()
+                .debug_selector(move || format!("fact:{selector}"))
+                .px_2()
+                .py_0p5()
+                .rounded_md()
+                .bg(cx.theme().muted)
+                .text_xs()
+                .child(text)
+        };
+
+        let team = facts
+            .team
+            .as_ref()
+            .map(|team| chip("team", format!("Team {} ({}, {})", team.name, team.team_id, team_kind(&team.kind))));
+        let bundle_id = facts.bundle_id.as_ref().map(|identifier| chip("bundle-id", format!("Bundle ID {identifier}")));
+        let quota = facts.quota.map(|quota| {
+            let release = quota.next_release.map(|time| format!(", next frees {}", format_time(time)));
+
+            chip("quota", format!("{} free App IDs left{}", quota.remaining, release.unwrap_or_default()))
+        });
+        let expires = facts.expires.map(|expires| {
+            let days = facts.ttl_days.map(|days| format!(" ({days} days)")).unwrap_or_default();
+
+            chip("expiry", format!("Profile expires {}{days}", format_time(expires)))
+        });
+        let anisette = facts.anisette_device.as_ref().map(|device| chip("anisette", format!("Apple sees {device}")));
+        let encrypted =
+            facts.encrypted.then(|| chip("encrypted", "Encrypted executable: the app will not launch".into()));
+
+        let chips: Vec<_> = [team, bundle_id, quota, expires, anisette, encrypted].into_iter().flatten().collect();
+
+        if chips.is_empty() {
+            return None;
+        }
+
+        Some(div().flex().flex_wrap().gap_2().children(chips))
+    }
+
     fn render_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let progress = self.progress.filter(|(_, total)| *total != 0);
+        let editing = self.section == Section::App && self.app.is_some() && !self.busy;
+        let blocker = if editing { self.action_blocker() } else { None };
+
         let status = div()
             .flex_1()
             .min_w_0()
@@ -416,19 +436,39 @@ impl Sideport {
             ))
             .when_some(progress, |this, (done, total)| {
                 this.child(Progress::new().value((done as f64 / total as f64 * 100.) as f32))
+            })
+            .children(self.render_facts(cx))
+            .when_some(blocker.clone(), |this, blocker| {
+                this.child(
+                    div()
+                        .debug_selector(|| "action-guidance".into())
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(blocker),
+                )
             });
+
         let action = if self.cancellation.is_some() {
-            Button::new("cancel-job")
-                .outline()
-                .label("Cancel")
-                .on_click(cx.listener(|view, _, window, cx| view.cancel(&CancelJob, window, cx)))
+            Some(
+                Button::new("cancel-job")
+                    .outline()
+                    .label("Cancel")
+                    .debug_selector(|| "cancel-job".into())
+                    .on_click(cx.listener(|view, _, window, cx| view.cancel(&CancelJob, window, cx))),
+            )
+        } else if self.section == Section::App {
+            Some(
+                Button::new("primary-action")
+                    .primary()
+                    .label(self.primary_label())
+                    .disabled(self.app.is_none() || self.occupied() || blocker.is_some())
+                    .debug_selector(|| "primary-action".into())
+                    .on_click(cx.listener(|view, _, window, cx| view.primary_action(&ExportApp, window, cx))),
+            )
         } else {
-            Button::new("export-app")
-                .primary()
-                .label(if self.mode == ExportMode::Original { "Export original…" } else { "Export IPA…" })
-                .disabled(self.app.is_none() || self.busy || self.picking || self.dialog.is_some())
-                .on_click(cx.listener(|view, _, window, cx| view.export(&ExportApp, window, cx)))
+            None
         };
+
         let controls = div()
             .flex()
             .items_center()
@@ -452,7 +492,7 @@ impl Sideport {
                         .on_click(move |_, _, cx| cx.reveal_path(&path)),
                 )
             })
-            .child(action);
+            .children(action);
 
         div()
             .flex()
@@ -461,74 +501,68 @@ impl Sideport {
             .border_color(cx.theme().border)
             .bg(cx.theme().popover)
             .when_some(self.error.clone(), |this, error| {
-                this.child(div().px_8().pt_3().text_sm().text_color(cx.theme().danger).child(error))
+                this.child(
+                    div()
+                        .debug_selector(|| "error".into())
+                        .px_8()
+                        .pt_3()
+                        .text_sm()
+                        .text_color(cx.theme().danger)
+                        .child(error),
+                )
             })
             .child(div().px_8().py_5().flex().items_center().gap_5().child(status).child(controls))
     }
 
-    fn render_settings(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let settings = self.engine.settings();
-
-        div()
-            .max_w(px(720.))
-            .mx_auto()
-            .flex()
-            .flex_col()
-            .gap_6()
-            .child(div().text_2xl().font_weight(FontWeight::SEMIBOLD).child("Settings"))
-            .child(section_title("Appearance"))
-            .child(
-                div().flex().gap_2().children(
-                    [
-                        (ThemePreference::System, "System"),
-                        (ThemePreference::Light, "Light"),
-                        (ThemePreference::Dark, "Dark"),
-                    ]
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, (preference, label))| {
-                        Button::new(("theme", index))
-                            .outline()
-                            .label(label)
-                            .selected(settings.theme == preference)
-                            .on_click(cx.listener(move |view, _, window, cx| view.theme(preference, window, cx)))
-                    }),
-                ),
-            )
-            .child(div().text_color(cx.theme().muted_foreground).child("Appearance is saved automatically."))
-            .child(Button::new("back-to-app").outline().label("Back to app").on_click(cx.listener(
-                |view, _, window, cx| {
-                    view.settings_open = false;
-                    view.focus.focus(window);
-                    cx.notify();
-                },
-            )))
+    fn render_navigation(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div().flex().gap_1().children(Section::ALL.into_iter().enumerate().map(|(index, section)| {
+            Button::new(("nav", index))
+                .ghost()
+                .label(section.label())
+                .selected(self.section == section)
+                .debug_selector(move || format!("nav:{}", section.label()))
+                .on_click(cx.listener(move |view, _, window, cx| view.show_section(section, window, cx)))
+        }))
     }
 
     fn render_dialog(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut body = div().flex().flex_col().gap_4();
-        let mut primary = "Continue".to_string();
+        let mut primary = Some("Continue".to_string());
+        let mut destructive = false;
 
         match &self.dialog {
             Some(Dialog::File(dialog)) => {
-                primary = if dialog.source.is_some() { "Add replacement" } else { "Add deletion" }.into();
+                let label = if dialog.source.is_some() { "Add replacement" } else { "Add deletion" };
+
+                primary = Some(label.into());
                 body = body
-                    .child(section_title(&primary))
+                    .child(section_title(label))
                     .child("Enter the target path inside the app.")
                     .child(Input::new(&dialog.target))
                     .when_some(dialog.source.clone(), |this, source| {
                         this.child(div().text_xs().child(format!("Source: {}", source.display())))
                     });
             }
+            Some(Dialog::Confirm(confirmation)) => {
+                primary = Some(confirmation.confirm_label.into());
+                destructive = true;
+                body = body.child(section_title(&confirmation.title)).child(confirmation.message.clone());
+            }
             Some(Dialog::Prompt(dialog)) => {
+                primary = dialog.primary_label();
+                destructive = dialog.destructive();
                 body = body.child(section_title(dialog.title())).child(dialog.message());
 
                 match &dialog.prompt.kind {
                     PromptKind::Password { .. } => {
-                        body = body.child(Input::new(&dialog.input)).child(
+                        let input = Input::new(&dialog.input);
+                        let input = if dialog.masked { input.mask_toggle() } else { input };
+
+                        body = body.child(input).child(
                             Checkbox::new("remember-prompt-password")
                                 .label("Remember password")
                                 .checked(dialog.remember)
+                                .debug_selector(|| "prompt-remember".into())
                                 .on_click(cx.listener(|view, checked, _, cx| {
                                     if let Some(Dialog::Prompt(dialog)) = &mut view.dialog {
                                         dialog.remember = *checked;
@@ -539,37 +573,70 @@ impl Sideport {
                     }
                     PromptKind::SecondFactor { can_request_sms, .. } => {
                         body = body.child(Input::new(&dialog.input)).when(*can_request_sms, |this| {
-                            this.child(Button::new("request-sms").outline().label("Send an SMS code").on_click(
-                                cx.listener(|view, _, window, cx| view.answer(PromptReply::RequestSms, window, cx)),
-                            ))
+                            this.child(
+                                Button::new("request-sms")
+                                    .outline()
+                                    .label("Text me a code")
+                                    .debug_selector(|| "prompt-request-sms".into())
+                                    .on_click(cx.listener(|view, _, window, cx| {
+                                        view.answer(PromptReply::RequestSms, window, cx)
+                                    })),
+                            )
                         });
                     }
                     PromptKind::SaveFile { .. } => {
-                        primary = "Save".into();
-                        body = body.child(Input::new(&dialog.input));
+                        body = body.child(
+                            div().flex().gap_2().child(div().flex_1().child(Input::new(&dialog.input))).child(
+                                Button::new("prompt-choose-path")
+                                    .outline()
+                                    .label("Choose…")
+                                    .on_click(cx.listener(|view, _, window, cx| view.choose_prompt_path(window, cx))),
+                            ),
+                        );
                     }
                     PromptKind::ChooseTeam { teams, .. } => {
-                        body = body.children(teams.iter().enumerate().map(|(index, team)| {
+                        body = body.children(teams.iter().enumerate().map(|(index, choice)| {
+                            let team = &choice.team;
+                            let label = format!("{} ({}) · {}", team.name, team.team_id, team_kind(&team.kind));
+
                             Button::new(("prompt-team", index))
                                 .outline()
-                                .label(format!("{} ({})", team.team.name, team.team.team_id))
+                                .label(label)
+                                .debug_selector(move || format!("prompt-team:{index}"))
                                 .on_click(cx.listener(move |view, _, window, cx| {
                                     view.answer(PromptReply::Choice(index), window, cx)
                                 }))
                         }));
-                        primary.clear();
                     }
-                    PromptKind::Confirm { confirm_label, .. } => primary = confirm_label.clone(),
-                    PromptKind::WaitForDevice { .. } => primary = "Retry".into(),
+                    PromptKind::Confirm { .. } => {}
+                    PromptKind::WaitForDevice { .. } => {
+                        body = body.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("Sideport continues on its own as soon as the device is connected again."),
+                        );
+                    }
                 }
             }
             None => {}
         }
 
+        let submit = primary.map(|label| {
+            let selector = if destructive { "dialog-submit-danger" } else { "dialog-submit" };
+            let button = Button::new("submit-dialog").label(label).debug_selector(move || selector.into());
+            let styled = if destructive { button.danger() } else { button.primary() };
+
+            styled.on_click(cx.listener(|view, _, window, cx| view.submit_dialog(window, cx)))
+        });
+
         div().absolute().inset_0().bg(rgba(0x00000070)).flex().items_center().justify_center().p_8().occlude().child(
             div()
+                .id("dialog")
                 .w(px(480.))
                 .max_w_full()
+                .max_h_full()
+                .overflow_y_scroll()
                 .rounded_xl()
                 .border_1()
                 .border_color(cx.theme().border)
@@ -590,45 +657,23 @@ impl Sideport {
                             Button::new("cancel-dialog")
                                 .outline()
                                 .label("Cancel")
+                                .debug_selector(|| "dialog-cancel".into())
                                 .on_click(cx.listener(|view, _, window, cx| view.dismiss_dialog(window, cx))),
                         )
-                        .when(!primary.is_empty(), |this| {
-                            this.child(
-                                Button::new("submit-dialog")
-                                    .primary()
-                                    .label(primary)
-                                    .on_click(cx.listener(|view, _, window, cx| view.submit_dialog(window, cx))),
-                            )
-                        }),
+                        .children(submit),
                 ),
         )
     }
-}
 
-fn section_title(title: &str) -> Div {
-    div().font_weight(FontWeight::SEMIBOLD).child(title.to_owned())
-}
-
-fn field(label: &str, state: &Entity<InputState>, disabled: bool) -> Div {
-    div()
-        .flex_1()
-        .min_w_0()
-        .flex()
-        .flex_col()
-        .gap_2()
-        .child(div().text_sm().child(label.to_owned()))
-        .child(Input::new(state).disabled(disabled))
-}
-
-fn format_bytes(bytes: u64) -> String {
-    if bytes < 1024 {
-        format!("{bytes} B")
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1} KiB", bytes as f64 / 1024.)
-    } else if bytes < 1024 * 1024 * 1024 {
-        format!("{:.1} MiB", bytes as f64 / (1024. * 1024.))
-    } else {
-        format!("{:.2} GiB", bytes as f64 / (1024. * 1024. * 1024.))
+    fn render_section(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        match self.section {
+            Section::App if self.app.is_some() => self.render_editor(window, cx).into_any_element(),
+            Section::App => self.render_empty(cx).into_any_element(),
+            Section::Accounts => self.render_accounts(cx),
+            Section::Devices => self.render_devices(cx),
+            Section::Installations => self.render_installations(cx),
+            Section::Settings => self.render_settings(cx),
+        }
     }
 }
 
@@ -648,16 +693,68 @@ impl Render for Sideport {
         let foreground = cx.theme().foreground;
         let border = cx.theme().border;
 
+        let brand = div()
+            .flex()
+            .items_center()
+            .gap_3()
+            .child(
+                div()
+                    .size_10()
+                    .rounded_lg()
+                    .bg(cx.theme().primary)
+                    .text_color(cx.theme().primary_foreground)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_lg()
+                    .font_weight(FontWeight::BOLD)
+                    .child("S"),
+            )
+            .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("Sideport"));
+
+        let header = div()
+            .h(px(76.))
+            .px_8()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_4()
+            .border_b_1()
+            .border_color(border)
+            .child(brand)
+            .child(self.render_navigation(cx));
+
+        let body = div()
+            .id("body")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .p_8()
+            .child(self.render_section(window, cx))
+            .when(self.logs_open && !self.logs.is_empty(), |this| this.child(self.render_logs(cx)));
+
         div()
             .id("sideport")
             .key_context("Sideport")
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::open_app))
-            .on_action(cx.listener(Self::export))
+            .on_action(cx.listener(Self::primary_action))
             .on_action(cx.listener(Self::cancel))
+            .on_action(cx.listener(|view, _: &ShowApp, window, cx| view.show_section(Section::App, window, cx)))
+            .on_action(
+                cx.listener(|view, _: &ShowAccounts, window, cx| view.show_section(Section::Accounts, window, cx)),
+            )
+            .on_action(cx.listener(|view, _: &ShowDevices, window, cx| view.show_section(Section::Devices, window, cx)))
+            .on_action(cx.listener(|view, _: &ShowInstallations, window, cx| {
+                view.show_section(Section::Installations, window, cx)
+            }))
+            .on_action(
+                cx.listener(|view, _: &ShowSettings, window, cx| view.show_section(Section::Settings, window, cx)),
+            )
             .capture_key_down(cx.listener(Self::dialog_key))
             .on_drop(cx.listener(|view, paths: &ExternalPaths, window, cx| {
                 if paths.paths().len() == 1 {
+                    view.section = Section::App;
                     view.load_path(paths.paths()[0].clone(), window, cx);
                 } else {
                     view.error = Some("Drop one app at a time.".into());
@@ -670,62 +767,8 @@ impl Render for Sideport {
             .bg(background)
             .text_color(foreground)
             .text_sm()
-            .child(
-                div()
-                    .h(px(76.))
-                    .px_8()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .border_b_1()
-                    .border_color(border)
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .child(
-                                div()
-                                    .size_10()
-                                    .rounded_lg()
-                                    .bg(cx.theme().primary)
-                                    .text_color(cx.theme().primary_foreground)
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .text_lg()
-                                    .font_weight(FontWeight::BOLD)
-                                    .child("S"),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_1()
-                                    .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("Sideport"))
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child("Prepare and export apps"),
-                                    ),
-                            ),
-                    )
-                    .child(Button::new("settings").label("Settings").ghost().on_click(cx.listener(
-                        |view, _, window, cx| {
-                            view.settings_open = !view.settings_open;
-                            view.focus.focus(window);
-                            cx.notify();
-                        },
-                    ))),
-            )
-            .child(div().id("body").flex_1().min_h_0().overflow_y_scroll().p_8().child(if self.settings_open {
-                self.render_settings(window, cx).into_any_element()
-            } else if self.app.is_some() {
-                self.render_editor(window, cx).into_any_element()
-            } else {
-                self.render_empty(cx).into_any_element()
-            }))
+            .child(header)
+            .child(body)
             .child(self.render_footer(cx))
             .when_some(self.dialog.as_ref(), |element, _| element.child(self.render_dialog(cx)))
     }

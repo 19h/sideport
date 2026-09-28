@@ -32,6 +32,10 @@ tempfile.workspace = true
 plist.workspace = true
 sl-bundle.workspace = true
 sl-macho.workspace = true
+sl-device.workspace = true
+sl-testkit.workspace = true
+wiremock.workspace = true
+tokio.workspace = true
 gpui = { workspace = true, features = ["test-support"] }
 
 [lints]

@@ -1,11 +1,12 @@
 use crate::{Draft, ExportMode, draft::validate_relative, picker, prompt::PromptDialog};
+use chrono::{DateTime, Utc};
 use gpui::{
     App, Context, Entity, FocusHandle, Focusable, Image, ImageFormat, Task, Window, actions, prelude::*, px, rgb,
 };
 use gpui_component::{Theme, ThemeMode, input::InputState};
 use sl_engine::{
-    AppSummary, Engine, EngineError, Fact, FileReplacement, JobEvent, JobOutcome, LibraryInjection, LogLevel,
-    PromptReply, Stage, ThemePreference,
+    AppSummary, Connection, Engine, EngineError, Fact, FileReplacement, JobEvent, JobHandle, JobOutcome, JobSpec,
+    LibraryInjection, LogLevel, PromptKind, PromptReply, SigningMode, Stage, Target, TeamSummary, ThemePreference,
 };
 use std::{
     collections::VecDeque,
@@ -14,14 +15,84 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-actions!(sideport, [OpenApp, ExportApp, CancelJob]);
+actions!(
+    sideport,
+    [OpenApp, ExportApp, CancelJob, ShowApp, ShowAccounts, ShowDevices, ShowInstallations, ShowSettings]
+);
 
+mod accounts;
+mod devices;
+mod installations;
+mod settings;
+mod signing;
 mod view;
+mod widgets;
 
 const MAX_LOG_LINES: usize = 400;
 
 #[cfg(test)]
 mod tests;
+
+/// Top-level areas of the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum Section {
+    #[default]
+    App,
+    Accounts,
+    Devices,
+    Installations,
+    Settings,
+}
+
+impl Section {
+    pub(crate) const ALL: [Self; 5] = [Self::App, Self::Accounts, Self::Devices, Self::Installations, Self::Settings];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::App => "App",
+            Self::Accounts => "Accounts",
+            Self::Devices => "Devices",
+            Self::Installations => "Installations",
+            Self::Settings => "Settings",
+        }
+    }
+}
+
+/// Where the editor sends the prepared app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum Destination {
+    #[default]
+    Export,
+    Device,
+}
+
+impl Destination {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Export => "Export IPA",
+            Self::Device => "Install on device",
+        }
+    }
+}
+
+/// Free-team App ID availability reported by a provisioning job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Quota {
+    pub(crate) remaining: u32,
+    pub(crate) next_release: Option<DateTime<Utc>>,
+}
+
+/// Structured facts of the current or last job, shown beside its progress.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct JobFacts {
+    pub(crate) team: Option<TeamSummary>,
+    pub(crate) bundle_id: Option<String>,
+    pub(crate) quota: Option<Quota>,
+    pub(crate) expires: Option<DateTime<Utc>>,
+    pub(crate) ttl_days: Option<u64>,
+    pub(crate) anisette_device: Option<String>,
+    pub(crate) encrypted: bool,
+}
 
 struct Fields {
     name: Entity<InputState>,
@@ -30,6 +101,7 @@ struct Fields {
     short_version: Entity<InputState>,
     minimum_os: Entity<InputState>,
     overrides: Entity<InputState>,
+    upload_chunk: Entity<InputState>,
 }
 
 impl Fields {
@@ -40,13 +112,14 @@ impl Fields {
         let version = input("Build number");
         let short_version = input("Release version");
         let minimum_os = input("Minimum OS version");
+        let upload_chunk = input("1");
         let overrides = cx.new(|cx| {
             InputState::new(window, cx)
                 .multi_line(true)
                 .placeholder("{\"CustomKey\": \"value\", \"RemoveThisKey\": null}")
         });
 
-        Self { name, identifier, version, short_version, minimum_os, overrides }
+        Self { name, identifier, version, short_version, minimum_os, overrides, upload_chunk }
     }
 
     fn load(&self, draft: &Draft, window: &mut Window, cx: &mut App) {
@@ -57,6 +130,7 @@ impl Fields {
             (&self.short_version, &draft.short_version),
             (&self.minimum_os, &draft.minimum_os),
             (&self.overrides, &draft.extra_info),
+            (&self.upload_chunk, &draft.upload_chunk),
         ] {
             field.update(cx, |input, cx| input.set_value(value.clone(), window, cx));
         }
@@ -69,6 +143,7 @@ impl Fields {
         draft.short_version = self.short_version.read(cx).value().to_string();
         draft.minimum_os = self.minimum_os.read(cx).value().to_string();
         draft.extra_info = self.overrides.read(cx).value().to_string();
+        draft.upload_chunk = self.upload_chunk.read(cx).value().to_string();
     }
 }
 
@@ -77,20 +152,48 @@ struct FileDialog {
     source: Option<PathBuf>,
 }
 
+/// A destructive action the window asks about before performing it.
+pub(crate) enum PendingAction {
+    RevokeCertificate { apple_id: String, serial: String },
+    UninstallApp { udid: String, bundle_id: String },
+    RemoveProfile { udid: String, uuid: String },
+    ForgetInstallation { id: i64 },
+}
+
+pub(crate) struct Confirmation {
+    pub(crate) title: String,
+    pub(crate) message: String,
+    pub(crate) confirm_label: &'static str,
+    pub(crate) action: PendingAction,
+}
+
 enum Dialog {
     Prompt(PromptDialog),
     File(FileDialog),
+    Confirm(Confirmation),
+}
+
+impl Dialog {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Prompt(_) => "prompt",
+            Self::File(_) => "file",
+            Self::Confirm(_) => "confirmation",
+        }
+    }
 }
 
 /// The desktop root owns task handles so closing it cancels outstanding work.
 pub struct Sideport {
     engine: Engine,
     focus: FocusHandle,
+    section: Section,
     app: Option<AppSummary>,
     icon: Option<Arc<Image>>,
     draft: Draft,
     fields: Fields,
     mode: ExportMode,
+    destination: Destination,
     busy: bool,
     closing: bool,
     cancellation: Option<CancellationToken>,
@@ -104,8 +207,14 @@ pub struct Sideport {
     status: String,
     stage: Option<Stage>,
     progress: Option<(u64, u64)>,
+    facts: JobFacts,
+    /// Apple ID of the running job, so reported quotas are attributed to its account.
+    job_account: Option<String>,
     logs: VecDeque<(LogLevel, String)>,
-    settings_open: bool,
+    accounts: accounts::Accounts,
+    devices: devices::Devices,
+    installations: installations::Installations,
+    settings: settings::SettingsForm,
     advanced_open: bool,
     logs_open: bool,
 }
@@ -114,9 +223,16 @@ impl std::fmt::Debug for Sideport {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("Sideport")
+            .field("section", &self.section)
             .field("has_app", &self.app.is_some())
+            .field("mode", &self.mode)
+            .field("destination", &self.destination)
             .field("busy", &self.busy)
             .field("stage", &self.stage)
+            .field("dialog", &self.dialog.as_ref().map(Dialog::kind))
+            .field("accounts", &self.accounts.list.len())
+            .field("devices", &self.devices.list.len())
+            .field("installations", &self.installations.list.len())
             .finish_non_exhaustive()
     }
 }
@@ -131,8 +247,11 @@ impl Drop for Sideport {
 
 impl Sideport {
     pub fn new(engine: Engine, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let settings = engine.settings();
         let focus = cx.focus_handle();
         let fields = Fields::new(window, cx);
+        let accounts = accounts::Accounts::new(settings.remember_passwords, window, cx);
+        let settings_form = settings::SettingsForm::new(&settings, window, cx);
         let weak = cx.weak_entity();
 
         window.on_window_should_close(cx, move |window, cx| {
@@ -145,16 +264,19 @@ impl Sideport {
             }
         })
         .detach();
+        accounts::submit_on_enter(&accounts, window, cx);
         focus.focus(window);
 
-        Self {
+        let mut sideport = Self {
             engine,
             focus,
+            section: Section::default(),
             app: None,
             icon: None,
             draft: Draft::default(),
             fields,
             mode: ExportMode::default(),
+            destination: Destination::default(),
             busy: false,
             closing: false,
             cancellation: None,
@@ -168,18 +290,53 @@ impl Sideport {
             status: "Choose an app to begin".into(),
             stage: None,
             progress: None,
+            facts: JobFacts::default(),
+            job_account: None,
             logs: VecDeque::new(),
-            settings_open: false,
+            accounts,
+            devices: devices::Devices::default(),
+            installations: installations::Installations::default(),
+            settings: settings_form,
             advanced_open: false,
             logs_open: false,
+        };
+
+        sideport.reload_accounts();
+        sideport.reload_installations();
+        sideport.watch_refresh(window, cx);
+
+        sideport
+    }
+
+    /// Whether a job, picker, or dialog currently owns the window's interaction.
+    fn occupied(&self) -> bool {
+        self.busy || self.picking || self.dialog.is_some()
+    }
+
+    pub(crate) fn show_section(&mut self, section: Section, window: &mut Window, cx: &mut Context<Self>) {
+        self.section = section;
+
+        match section {
+            Section::App => {}
+            Section::Accounts => self.reload_accounts(),
+            Section::Devices => {
+                self.watch_devices(window, cx);
+                self.load_device_contents(window, cx);
+            }
+            Section::Installations => self.reload_installations(),
+            Section::Settings => self.settings.load(&self.engine.settings(), window, cx),
         }
+
+        self.focus.focus(window);
+        cx.notify();
     }
 
     pub fn load_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy || self.picking || self.dialog.is_some() {
+        if self.occupied() {
             return;
         }
 
+        self.section = Section::App;
         self.app = None;
         self.icon = None;
         self.busy = true;
@@ -188,6 +345,7 @@ impl Sideport {
         self.status = "Reading app…".into();
         self.stage = None;
         self.progress = None;
+        self.facts = JobFacts::default();
         self.logs.clear();
 
         let job = self.engine.inspect_job(path);
@@ -200,9 +358,9 @@ impl Sideport {
                     Ok(app) => {
                         view.icon =
                             app.icon_png.as_ref().map(|png| Arc::new(Image::from_bytes(ImageFormat::Png, png.clone())));
-                        view.draft = Draft::for_app(&app);
+                        view.draft = view.fresh_draft(&app);
                         view.fields.load(&view.draft, window, cx);
-                        view.status = "Ready to export".into();
+                        view.status = "Ready".into();
 
                         for warning in &app.warnings {
                             view.add_log(LogLevel::Warn, warning.clone());
@@ -219,13 +377,25 @@ impl Sideport {
         cx.notify();
     }
 
+    /// A new draft for `app` that keeps the chosen account and applies the saved defaults.
+    fn fresh_draft(&self, app: &AppSummary) -> Draft {
+        let mut draft = Draft::for_app(app);
+
+        draft.apple_id = self.draft.apple_id.clone();
+        draft.options.stream_upload = self.engine.settings().stream_upload;
+        draft.options.track_for_refresh = true;
+
+        draft
+    }
+
     fn open_app(&mut self, _: &OpenApp, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy || self.picking || self.dialog.is_some() {
+        if self.occupied() {
             return;
         }
 
         let paths = picker::paths(window, cx, "Choose an IPA, app ZIP, or .app", false);
         self.picking = true;
+        self.section = Section::App;
 
         self.picker = Some(cx.spawn_in(window, async move |view, cx| {
             let result = paths.await;
@@ -251,13 +421,31 @@ impl Sideport {
         cx.notify();
     }
 
-    fn export(&mut self, _: &ExportApp, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy || self.picking || self.dialog.is_some() {
+    /// The editor's primary action: export or install, following the destination.
+    fn primary_action(&mut self, _: &ExportApp, window: &mut Window, cx: &mut Context<Self>) {
+        if self.section != Section::App {
+            return;
+        }
+
+        match self.destination {
+            Destination::Export => self.export(window, cx),
+            Destination::Device => self.install(window, cx),
+        }
+    }
+
+    fn export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.occupied() {
             return;
         }
         let Some(app) = &self.app else {
             return;
         };
+
+        if let Some(reason) = self.action_blocker() {
+            self.error = Some(reason);
+            cx.notify();
+            return;
+        }
 
         self.fields.store(&mut self.draft, cx);
         let spec = match self.draft.job(app, self.mode, None) {
@@ -268,11 +456,12 @@ impl Sideport {
                 return;
             }
         };
-        let suggested = format!(
-            "{} {}.ipa",
-            app.path.file_stem().unwrap_or_default().to_string_lossy(),
-            if self.mode == ExportMode::Original { "Original" } else { "Prepared" }
-        );
+        let label = match self.mode {
+            ExportMode::Original => "Original",
+            ExportMode::AppleId => "Signed",
+            _ => "Prepared",
+        };
+        let suggested = format!("{} {label}.ipa", app.path.file_stem().unwrap_or_default().to_string_lossy());
         let parent = app.path.parent().unwrap_or(Path::new("."));
         let path = picker::destination(window, cx, parent, &suggested);
         self.error = None;
@@ -290,7 +479,7 @@ impl Sideport {
                 match result {
                     Ok(Some(path)) => {
                         let mut spec = spec;
-                        spec.target = sl_engine::Target::ExportIpa { path: Some(path) };
+                        spec.target = Target::ExportIpa { path: Some(path) };
                         view.start_job(spec, window, cx);
                     }
                     Err(error) => {
@@ -298,7 +487,7 @@ impl Sideport {
                         view.status = "Export did not start".into();
                     }
                     _ => {
-                        view.status = "Ready to export".into();
+                        view.status = "Ready".into();
                     }
                 }
 
@@ -308,15 +497,75 @@ impl Sideport {
         cx.notify();
     }
 
-    fn start_job(&mut self, spec: sl_engine::JobSpec, window: &mut Window, cx: &mut Context<Self>) {
-        self.busy = true;
+    fn install(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.occupied() {
+            return;
+        }
+        let Some(app) = &self.app else {
+            return;
+        };
+
+        if let Some(reason) = self.action_blocker() {
+            self.error = Some(reason);
+            cx.notify();
+            return;
+        }
+        let Some(device) = self.selected_device() else {
+            return;
+        };
+
+        let prefer_network = !device.connections.contains(&Connection::Usb);
+        let target = Target::Device { udid: device.udid.clone(), prefer_network };
+
+        self.fields.store(&mut self.draft, cx);
+        let spec = match self.draft.spec(app, self.mode, target) {
+            Ok(spec) => spec,
+            Err(error) => {
+                self.error = Some(error);
+                cx.notify();
+                return;
+            }
+        };
+
+        self.error = None;
+        self.start_job(spec, window, cx);
+    }
+
+    fn start_job(&mut self, spec: JobSpec, window: &mut Window, cx: &mut Context<Self>) {
+        let installing = matches!(spec.target, Target::Device { .. });
+
         self.outcome = None;
-        self.logs.clear();
-        self.stage = Some(Stage::Preparing);
-        self.progress = None;
-        self.status = "Preparing…".into();
+        self.job_account = match &spec.signing {
+            SigningMode::AppleId { apple_id } => Some(apple_id.clone()),
+            _ => None,
+        };
 
         let job = self.engine.start(spec);
+        self.run_job(job, "Preparing…", window, cx, move |view, outcome, _, _| {
+            view.status = if installing { "Installed".into() } else { "Export complete".into() };
+            view.outcome = Some(outcome);
+        });
+        self.stage = Some(Stage::Preparing);
+    }
+
+    /// Run an engine job in the window's single job slot: its events drive progress, facts and
+    /// prompts; closing the window cancels it and waits for its result.
+    fn run_job<T: Send + 'static>(
+        &mut self,
+        job: JobHandle<T>,
+        status: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        complete: impl FnOnce(&mut Self, T, &mut Window, &mut Context<Self>) + 'static,
+    ) {
+        self.busy = true;
+        self.error = None;
+        self.logs.clear();
+        self.facts = JobFacts::default();
+        self.stage = None;
+        self.progress = None;
+        self.status = status.into();
+
         let events = job.events();
         self.cancellation = Some(job.cancellation_token());
         self.operation = Some(cx.spawn_in(window, async move |view, cx| {
@@ -327,46 +576,103 @@ impl Sideport {
             }
 
             let result = job.result().await;
+
             let _ = view.update_in(cx, |view, window, cx| {
                 match result {
-                    Ok(outcome) => {
-                        view.status = "Export complete".into();
-                        view.outcome = Some(outcome);
-                    }
+                    Ok(value) => complete(view, value, window, cx),
                     Err(error) => view.failed(error),
                 }
 
                 view.finished(window, cx);
             });
         }));
+        cx.notify();
     }
 
     fn job_event(&mut self, event: JobEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(event, JobEvent::Prompt(_)) {
+            self.dismiss_stale_prompt(&event, window);
+        }
+
         match event {
             JobEvent::Stage(stage) => {
                 self.stage = Some(stage);
                 self.progress = None;
                 self.status = stage.label().into();
-                self.dialog = None;
             }
             JobEvent::Progress { done, total } => self.progress = Some((done, total)),
             JobEvent::Log { level, message } => self.add_log(level, message),
-            JobEvent::Fact(Fact::BundleId(identifier)) => {
-                self.add_log(LogLevel::Info, format!("Bundle identifier: {identifier}"))
-            }
-            JobEvent::Fact(Fact::EncryptedBinary) => {
-                self.add_log(LogLevel::Warn, "The executable remains encrypted after signing.".into())
-            }
-            JobEvent::Fact(_) => {}
+            JobEvent::Fact(fact) => self.record_fact(fact),
             JobEvent::Prompt(prompt) => {
-                let dialog = PromptDialog::new(prompt, window, cx);
-                cx.focus_view(&dialog.input, window);
+                let device_name = match &prompt.kind {
+                    PromptKind::WaitForDevice { udid, .. } => self.device_name(udid),
+                    _ => None,
+                };
+                let dialog = PromptDialog::new(prompt, device_name, window, cx);
+
+                if dialog.has_input() {
+                    cx.focus_view(&dialog.input, window);
+                } else {
+                    self.focus.focus(window);
+                }
+
                 self.dialog = Some(Dialog::Prompt(dialog));
                 self.dialog_error = None;
             }
         }
 
         cx.notify();
+    }
+
+    /// A job blocked on a question emits nothing until it is answered, except when it can
+    /// continue on its own: the engine stops waiting for a device once the device returns. Any
+    /// later event therefore makes a device question stale, and a new stage ends any question.
+    fn dismiss_stale_prompt(&mut self, event: &JobEvent, window: &mut Window) {
+        let Some(Dialog::Prompt(dialog)) = &self.dialog else {
+            return;
+        };
+
+        let waiting_for_device = matches!(dialog.prompt.kind, PromptKind::WaitForDevice { .. });
+
+        if !waiting_for_device && !matches!(event, JobEvent::Stage(_)) {
+            return;
+        }
+
+        self.dialog = None;
+        self.dialog_error = None;
+        self.focus.focus(window);
+
+        if waiting_for_device {
+            self.add_log(LogLevel::Info, "The device is available again; continuing.".into());
+        }
+    }
+
+    fn record_fact(&mut self, fact: Fact) {
+        match fact {
+            Fact::BundleId(identifier) => {
+                self.add_log(LogLevel::Info, format!("Bundle identifier: {identifier}"));
+                self.facts.bundle_id = Some(identifier);
+            }
+            Fact::Team(team) => self.facts.team = Some(team),
+            Fact::AppIdQuota { remaining, next_release } => {
+                let quota = Quota { remaining, next_release };
+
+                if let Some(apple_id) = &self.job_account {
+                    self.accounts.quota.insert(apple_id.clone(), quota);
+                }
+
+                self.facts.quota = Some(quota);
+            }
+            Fact::ProfileExpiry { expires, ttl_days } => {
+                self.facts.expires = Some(expires);
+                self.facts.ttl_days = ttl_days;
+            }
+            Fact::AnisetteDevice(description) => self.facts.anisette_device = Some(description),
+            Fact::EncryptedBinary => {
+                self.add_log(LogLevel::Warn, "The executable remains encrypted after signing.".into());
+                self.facts.encrypted = true;
+            }
+        }
     }
 
     fn add_log(&mut self, level: LogLevel, message: String) {
@@ -392,8 +698,12 @@ impl Sideport {
     fn finished(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.busy = false;
         self.cancellation = None;
-        self.dialog = None;
-        self.dialog_error = None;
+        self.job_account = None;
+        self.close_prompt();
+
+        // Jobs can add installations, record refresh failures and choose default teams.
+        self.reload_accounts();
+        self.reload_installations();
 
         if self.closing {
             window.remove_window();
@@ -405,11 +715,19 @@ impl Sideport {
         cx.notify();
     }
 
+    /// Drop an unanswered job question; the job receives a cancellation.
+    fn close_prompt(&mut self) {
+        if matches!(self.dialog, Some(Dialog::Prompt(_))) {
+            self.dialog = None;
+            self.dialog_error = None;
+        }
+    }
+
     fn cancel(&mut self, _: &CancelJob, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(cancellation) = &self.cancellation {
             cancellation.cancel();
             self.status = "Cancelling…".into();
-            self.dialog = None;
+            self.close_prompt();
             cx.notify();
         }
     }
@@ -431,7 +749,7 @@ impl Sideport {
     }
 
     fn add_injection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy || self.picking || self.dialog.is_some() || self.mode == ExportMode::Original {
+        if self.occupied() || self.mode == ExportMode::Original {
             return;
         }
 
@@ -464,7 +782,7 @@ impl Sideport {
     }
 
     fn file_edit(&mut self, source: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy || self.picking || self.dialog.is_some() || self.mode == ExportMode::Original {
+        if self.occupied() || self.mode == ExportMode::Original {
             return;
         }
 
@@ -483,7 +801,7 @@ impl Sideport {
     }
 
     fn choose_replacement(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy || self.picking || self.dialog.is_some() || self.mode == ExportMode::Original {
+        if self.occupied() || self.mode == ExportMode::Original {
             return;
         }
 
@@ -511,6 +829,37 @@ impl Sideport {
             });
         }));
         cx.notify();
+    }
+
+    /// Fill a save-path question from the platform save panel.
+    fn choose_prompt_path(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(Dialog::Prompt(dialog)) = &self.dialog else {
+            return;
+        };
+        let PromptKind::SaveFile { suggested_name } = &dialog.prompt.kind else {
+            return;
+        };
+
+        let directory = self.app.as_ref().and_then(|app| app.path.parent().map(Path::to_path_buf));
+        let directory = directory.or_else(dirs_home).unwrap_or_else(|| PathBuf::from("."));
+        let path = picker::destination(window, cx, &directory, suggested_name);
+
+        self.picker = Some(cx.spawn_in(window, async move |view, cx| {
+            let result = path.await;
+
+            let _ = view.update_in(cx, |view, window, cx| {
+                match (result, &view.dialog) {
+                    (Ok(Some(path)), Some(Dialog::Prompt(dialog))) => {
+                        let text = path.to_string_lossy().into_owned();
+                        dialog.input.update(cx, |input, cx| input.set_value(text, window, cx));
+                    }
+                    (Err(error), _) => view.dialog_error = Some(error.to_string()),
+                    _ => {}
+                }
+
+                cx.notify();
+            });
+        }));
     }
 
     fn answer(&mut self, reply: PromptReply, window: &mut Window, cx: &mut Context<Self>) {
@@ -549,18 +898,38 @@ impl Sideport {
                 self.focus.focus(window);
                 cx.notify();
             }
+            Some(Dialog::Confirm(_)) => {
+                let Some(Dialog::Confirm(confirmation)) = self.dialog.take() else {
+                    return;
+                };
+
+                self.dialog_error = None;
+                self.focus.focus(window);
+                self.perform(confirmation.action, window, cx);
+                cx.notify();
+            }
             None => {}
         }
     }
 
     fn dismiss_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if matches!(self.dialog, Some(Dialog::Prompt(_))) {
-            self.answer(PromptReply::Cancel, window, cx);
+        if let Some(Dialog::Prompt(dialog)) = &self.dialog {
+            let reply = dialog.dismissal();
+            self.answer(reply, window, cx);
         } else {
             self.dialog = None;
             self.dialog_error = None;
             self.focus.focus(window);
             cx.notify();
+        }
+    }
+
+    /// Destructive dialogs require an explicit click; Enter does not confirm them.
+    fn dialog_is_destructive(&self) -> bool {
+        match &self.dialog {
+            Some(Dialog::Prompt(dialog)) => dialog.destructive(),
+            Some(Dialog::Confirm(_)) => true,
+            _ => false,
         }
     }
 
@@ -571,24 +940,43 @@ impl Sideport {
 
         match event.keystroke.key.as_str() {
             "escape" => self.dismiss_dialog(window, cx),
-            "enter" if event.keystroke.modifiers == gpui::Modifiers::none() => self.submit_dialog(window, cx),
+            "enter" if event.keystroke.modifiers == gpui::Modifiers::none() => {
+                if !self.dialog_is_destructive() {
+                    self.submit_dialog(window, cx);
+                }
+            }
             _ => return,
         }
 
         cx.stop_propagation();
     }
 
-    fn theme(&mut self, preference: ThemePreference, window: &mut Window, cx: &mut Context<Self>) {
-        let mut settings = self.engine.settings();
-        settings.theme = preference;
-
-        match self.engine.update_settings(settings) {
-            Ok(()) => apply_theme(preference, window, cx),
-            Err(error) => self.error = Some(error.to_string()),
+    /// Ask before a destructive action.
+    pub(crate) fn confirm(&mut self, confirmation: Confirmation, window: &mut Window, cx: &mut Context<Self>) {
+        if self.occupied() {
+            return;
         }
 
+        self.dialog = Some(Dialog::Confirm(confirmation));
+        self.dialog_error = None;
+        self.focus.focus(window);
         cx.notify();
     }
+
+    fn perform(&mut self, action: PendingAction, window: &mut Window, cx: &mut Context<Self>) {
+        match action {
+            PendingAction::RevokeCertificate { apple_id, serial } => {
+                self.revoke_certificate(apple_id, serial, window, cx)
+            }
+            PendingAction::UninstallApp { udid, bundle_id } => self.uninstall_app(udid, bundle_id, window, cx),
+            PendingAction::RemoveProfile { udid, uuid } => self.remove_profile(udid, uuid, window, cx),
+            PendingAction::ForgetInstallation { id } => self.forget_installation(id, cx),
+        }
+    }
+}
+
+fn dirs_home() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(PathBuf::from)
 }
 
 pub fn apply_theme(preference: ThemePreference, window: &mut Window, cx: &mut App) {

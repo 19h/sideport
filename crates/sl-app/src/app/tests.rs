@@ -1,14 +1,29 @@
 use super::*;
+use futures::StreamExt;
 use gpui::{EventEmitter, TestAppContext, VisualTestContext};
 use gpui_component::Root;
 use sl_bundle::{ArchiveLimits, BundleArchive, Control};
-use sl_engine::{AppOptions, EngineConfig, JobSpec, Prompt, PromptKind, Target};
-use std::fs;
+use sl_engine::{AppOptions, DeviceBackend, EngineConfig, JobSpec, Prompt, PromptKind, Target};
+use sl_testkit::FakeDevice;
+use std::{
+    fs,
+    time::{Duration, Instant},
+};
 
 #[path = "../../../sl-bundle/tests/common/mod.rs"]
 mod common;
 
+mod account_flows;
+mod device_flows;
+mod installation_flows;
+mod prompt_dialogs;
+mod real_install;
+mod settings_form;
+
 impl EventEmitter<()> for Sideport {}
+
+/// UDID of the fake device given to every non-demo test engine.
+const UDID: &str = "00008030-001A2D0C0E38802E";
 
 fn window(engine: Engine, cx: &mut TestAppContext) -> (Entity<Sideport>, VisualTestContext) {
     // The engine uses real Tokio workers rather than GPUI's deterministic test executor.
@@ -23,11 +38,105 @@ fn window(engine: Engine, cx: &mut TestAppContext) -> (Entity<Sideport>, VisualT
         Root::new(sideport, window, cx)
     });
 
-    (view.expect("view"), VisualTestContext::from_window(window.into(), cx))
+    let cx = VisualTestContext::from_window(window.into(), cx);
+
+    // Tall enough that every section's controls are inside the window without scrolling.
+    cx.simulate_resize(gpui::size(px(1280.), px(3600.)));
+
+    (view.expect("view"), cx)
+}
+
+/// Test engines never use the keychain, the system usbmuxd, or the background scheduler.
+fn isolated(root: &Path, device: &FakeDevice, config: EngineConfig) -> Engine {
+    let config = EngineConfig {
+        data_dir: Some(root.join("data")),
+        file_secrets: true,
+        disable_scheduler: true,
+        device_backend: Some(DeviceBackend(device.backend())),
+        ..config
+    };
+
+    Engine::new(config).expect("engine")
 }
 
 fn engine(root: &Path) -> Engine {
-    Engine::new(EngineConfig { data_dir: Some(root.join("data")), ..EngineConfig::default() }).expect("engine")
+    isolated(root, &FakeDevice::iphone(UDID), EngineConfig::default())
+}
+
+fn demo_engine(root: &Path) -> Engine {
+    isolated(root, &FakeDevice::iphone(UDID), EngineConfig { demo: true, ..EngineConfig::default() })
+}
+
+fn draw(cx: &mut VisualTestContext) {
+    cx.update(|window, cx| {
+        let _ = window.draw(cx);
+    });
+}
+
+/// Whether the element with this debug selector has been drawn. GPUI 0.2.2 keeps debug bounds
+/// from earlier frames, so absence is only meaningful for a selector this window never drew.
+fn rendered(cx: &mut VisualTestContext, selector: &str) -> bool {
+    draw(cx);
+
+    let selector: &'static str = Box::leak(selector.to_owned().into_boxed_str());
+
+    cx.debug_bounds(selector).is_some()
+}
+
+/// Click the center of a rendered control, as a pointer would.
+fn click(cx: &mut VisualTestContext, selector: &str) {
+    draw(cx);
+
+    let selector: &'static str = Box::leak(selector.to_owned().into_boxed_str());
+    let bounds = cx.debug_bounds(selector).unwrap_or_else(|| panic!("{selector} is not rendered"));
+
+    cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+}
+
+fn set_input(cx: &mut VisualTestContext, input: &Entity<InputState>, value: &str) {
+    let value = value.to_owned();
+
+    cx.update(|window, cx| input.update(cx, |input, cx| input.set_value(value, window, cx)));
+}
+
+/// Wait for the view to satisfy `predicate`; real engine work runs on Tokio threads, so this
+/// re-checks after every view notification and at least every 200 ms, for at most 60 s.
+async fn until(cx: &mut VisualTestContext, view: &Entity<Sideport>, what: &str, predicate: impl Fn(&Sideport) -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut notifications = cx.notifications(view);
+
+    while !cx.read(|cx| predicate(view.read(cx))) {
+        if Instant::now() >= deadline {
+            let state = cx.read(|cx| {
+                let view = view.read(cx);
+
+                format!("{view:?}; status {:?}; error {:?}; logs {:?}", view.status, view.error, view.logs)
+            });
+
+            panic!("timed out waiting for {what}: {state}");
+        }
+
+        let tick = ticker(Duration::from_millis(200));
+        futures::future::select(notifications.next(), tick).await;
+    }
+}
+
+fn ticker(duration: Duration) -> futures::channel::oneshot::Receiver<()> {
+    let (sender, receiver) = futures::channel::oneshot::channel();
+
+    std::thread::spawn(move || {
+        std::thread::sleep(duration);
+        let _ = sender.send(());
+    });
+
+    receiver
+}
+
+fn prompt_kind(view: &Sideport) -> Option<&PromptKind> {
+    match &view.dialog {
+        Some(Dialog::Prompt(dialog)) => Some(&dialog.prompt.kind),
+        _ => None,
+    }
 }
 
 #[gpui::test]
