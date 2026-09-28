@@ -538,9 +538,19 @@ impl Engine {
     /// Stream the device syslog as job log events until the job is cancelled; `filter` keeps
     /// only lines containing it (case-insensitive).
     pub fn syslog(&self, udid: String, filter: Option<String>) -> JobHandle<()> {
+        let demo = self.inner.demo.is_some();
         let inner = self.inner.clone();
 
-        self.job(move |context| async move { devices::syslog(&inner, &context, &udid, filter.as_deref()).await })
+        self.job(move |context| async move {
+            if demo {
+                context.info("Demo device log: no device is attached.");
+                context.cancellation_token().cancelled().await;
+
+                return Ok(());
+            }
+
+            devices::syslog(&inner, &context, &udid, filter.as_deref()).await
+        })
     }
 
     /// Start pairing (shows the "Trust This Computer?" dialog on the device).
@@ -558,37 +568,69 @@ impl Engine {
 
     /// Repair pairing (unpair, then pair again with the trust dialog); reports typed progress.
     pub fn repair_pairing(&self, udid: String) -> JobHandle<()> {
+        let demo = self.inner.demo.clone();
         let inner = self.inner.clone();
 
-        self.job(move |context| async move { devices::repair_pairing(&inner, &context, &udid).await })
+        self.job(move |context| async move {
+            match demo {
+                Some(demo) => demo.device_utility(&context, "Pairing repaired").await,
+                None => devices::repair_pairing(&inner, &context, &udid).await,
+            }
+        })
     }
 
     /// Download (or reuse the cache) and mount the Developer Disk Image for the device version.
     pub fn mount_developer_image(&self, udid: String) -> JobHandle<DdiMount> {
+        let demo = self.inner.demo.clone();
         let inner = self.inner.clone();
 
-        self.job(move |context| async move { devices::mount_developer_image(&inner, &context, &udid).await })
+        self.job(move |context| async move {
+            match demo {
+                Some(demo) => {
+                    demo.device_utility(&context, "Mounted the developer image").await?;
+
+                    Ok(DdiMount { already_mounted: false, personalized: true })
+                }
+                None => devices::mount_developer_image(&inner, &context, &udid).await,
+            }
+        })
     }
 
     /// Enable JIT for an installed bundle (mounts the developer image, then launches or attaches).
     pub fn enable_jit(&self, udid: String, bundle_id: String, launch: bool) -> JobHandle<()> {
+        let demo = self.inner.demo.clone();
         let inner = self.inner.clone();
 
-        self.job(move |context| async move { devices::enable_jit(&inner, &context, &udid, &bundle_id, launch).await })
+        self.job(move |context| async move {
+            match demo {
+                Some(demo) => demo.device_utility(&context, &format!("Enabled JIT for {bundle_id}")).await,
+                None => devices::enable_jit(&inner, &context, &udid, &bundle_id, launch).await,
+            }
+        })
     }
 
     /// One heartbeat round trip; the interval proves a device (network or tvOS included) is reachable.
     pub fn heartbeat(&self, udid: String) -> impl Future<Output = Result<u64>> + use<> {
+        let demo = self.inner.demo.is_some();
         let inner = self.inner.clone();
 
-        self.run(async move { devices::heartbeat(&inner, &udid).await })
+        self.run(async move { if demo { Ok(10) } else { devices::heartbeat(&inner, &udid).await } })
     }
 
     /// Forward device notifications as job log events until the job is cancelled.
     pub fn notifications(&self, udid: String, names: Vec<String>) -> JobHandle<()> {
+        let demo = self.inner.demo.is_some();
         let inner = self.inner.clone();
 
-        self.job(move |context| async move { devices::notifications(&inner, &context, &udid, names).await })
+        self.job(move |context| async move {
+            if demo {
+                context.cancellation_token().cancelled().await;
+
+                return Ok(());
+            }
+
+            devices::notifications(&inner, &context, &udid, names).await
+        })
     }
 
     // --------------------------------------------------------------------------------------------
@@ -778,9 +820,16 @@ impl Engine {
 
     /// Download a `sideloadly:` link or HTTP(S) IPA URL into the downloads directory.
     pub fn download(&self, source: String) -> JobHandle<PathBuf> {
+        let demo = self.inner.demo.is_some();
         let inner = self.inner.clone();
 
-        self.job(move |context| async move { acquire::fetch(&inner, &context, &source).await })
+        self.job(move |context| async move {
+            if demo {
+                return Err(EngineError::Unsupported("the demo does not download links".into()));
+            }
+
+            acquire::fetch(&inner, &context, &source).await
+        })
     }
 
     // --------------------------------------------------------------------------------------------

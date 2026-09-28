@@ -186,6 +186,22 @@ impl Demo {
         Ok(account)
     }
 
+    /// A simulated device utility: two progress steps, then `done` as the final log line.
+    pub(crate) async fn device_utility(&self, context: &JobContext, done: &str) -> Result<()> {
+        context.stage(Stage::Preparing);
+
+        for step in 1..=2 {
+            context.checkpoint()?;
+            context.progress(step, 2);
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        }
+
+        context.stage(Stage::Done);
+        context.info(done);
+
+        Ok(())
+    }
+
     pub(crate) fn set_default_team(&self, apple_id: &str, team_id: Option<String>) -> Result<()> {
         let mut state = self.state.lock();
         let account = state

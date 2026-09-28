@@ -149,3 +149,28 @@ async fn repairing_pairing_unpairs_then_pairs_again() {
 fn finish_result(result: Result<(), sl_engine::EngineError>) {
     result.expect("repair pairing");
 }
+
+#[test]
+fn the_demo_simulates_device_utilities_and_refuses_downloads() {
+    let temporary = tempfile::tempdir().expect("tempdir");
+    let config = EngineConfig {
+        data_dir: Some(temporary.path().join("data")),
+        demo: true,
+        file_secrets: true,
+        disable_scheduler: true,
+        ddi: offline(),
+        ..EngineConfig::default()
+    };
+    let engine = Engine::new(config).expect("demo engine");
+    let udid = engine.is_demo().then(|| "00008120-001A2B3C4D5E6F70".to_string()).expect("demo");
+
+    let mount = finish(engine.mount_developer_image(udid.clone())).expect("mount");
+    assert!(mount.personalized && !mount.already_mounted);
+
+    finish(engine.enable_jit(udid.clone(), "com.example.app".into(), true)).expect("jit");
+    finish(engine.repair_pairing(udid.clone())).expect("repair");
+    assert_eq!(block_on(engine.heartbeat(udid)).expect("heartbeat"), 10);
+
+    let download = finish(engine.download("https://example.invalid/App.ipa".into()));
+    assert!(matches!(download, Err(sl_engine::EngineError::Unsupported(_))), "{download:?}");
+}
