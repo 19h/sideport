@@ -23,6 +23,7 @@ actions!(
 mod accounts;
 mod devices;
 mod installations;
+mod ipc;
 mod settings;
 mod signing;
 mod view;

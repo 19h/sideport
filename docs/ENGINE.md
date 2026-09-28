@@ -71,6 +71,28 @@ profile expiry. User entitlement overrides are merged over each profile's entitl
 recovered alternate-entitlements option does; keys whose values the profile does not grant (by
 equality or a trailing-asterisk grant) produce warnings rather than silent drops.
 
+## Local IPC
+
+The desktop app serves the recovered `gui/ipc` protocol (`crates/sl-engine/src/ipc.rs`,
+`engine/ipc.rs`; recovered `sideloadly/gui/ipc.Start`, `main.pingSideloadly`) on
+127.0.0.1:28811: `/raise?fn=` (reply `success`; the window comes forward and opens `fn`),
+`/restart?e=` (the app closes through its normal cancellation path), `/enqueue?id=` (`Task
+enqueuedOK`, 500 `Task enqueue failOK`, or `ERROR 0 <reason>` with Go `Fscanf("%d")` parsing; the
+serving process queues and runs the refresh), `/tokens?user_token=` (completes the one sign-in
+waiting through `Engine::await_sign_in_token`, else 500 with the recovered apology) and
+`/poll?v=` (`Version mismatch`, the next message left with `Engine::leave_message`, or `bye`
+when the server stops; the ten newest messages are kept, as `LeaveMessage` does). A second
+desktop launch that cannot bind the port sends `/raise` with its file and exits on `success`.
+`sideport ipc raise|enqueue|poll|restart` is the command-line client.
+
+Deviations: the recovered server bound `localhost:28811` and answered any request. Sideport binds
+127.0.0.1 only, accepts only `GET`, requires `Host` to be `localhost:<port>` or
+`127.0.0.1:<port>` (DNS rebinding), and requires `X-Sideport-Token` with the secret in
+`<data>/ipc-token` (0600, 256 random bits) on every route except `/tokens`. Browsers cannot send
+that header cross-origin without a preflight, which is refused, so a web page cannot open files,
+queue refreshes or close the app. The return page names Sideport. The app is not restarted by
+the engine; `/restart` asks the front end to close. Demo instances do not serve IPC.
+
 ## Algorithm and complexity
 
 The export sequence is: validate the requested backend/options; inspect on a blocking worker;
@@ -91,7 +113,7 @@ These are algorithmic bounds; measured throughput, peak RSS, and cancellation la
 ## CLI and primary sources
 
 `sideport` exposes the engine: `inspect`, `export` (ad-hoc, unsigned, original, Apple ID),
-`install`, `run`, `settings`, `account` (list, login, logout, import, default-team), `certificates`,
+`install`, `run`, `settings`, `account` (list, login, logout, import, default-team), `ipc`, `certificates`,
 `app-ids`, `registered-devices`, `devices`, `device` (apps, uninstall, profiles,
 remove-profile, pair), `installations`, `installation` (refresh, forget, auto-refresh),
 `refresh-due` and `daemon`. Terminal prompts cover every prompt kind; without a terminal they

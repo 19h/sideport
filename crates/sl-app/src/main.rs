@@ -37,8 +37,26 @@ fn main() -> anyhow::Result<()> {
 
     let config = EngineConfig { data_dir: arguments.data_dir, demo: arguments.demo, ..EngineConfig::default() };
     let engine = Engine::new(config)?;
+
+    // One app per data directory: a second launch hands its file to the first and exits, as the
+    // recovered app does. The server lives until `run` returns.
+    let ipc = match (arguments.demo, engine.serve_ipc(None)) {
+        (true, _) => None,
+        (false, Ok(server)) => Some(server),
+        (false, Err(error)) => {
+            if forward_to_running_app(&engine, arguments.source.as_deref()) {
+                return Ok(());
+            }
+
+            tracing::warn!("local IPC is unavailable: {error}");
+            None
+        }
+    };
+
     let startup_error = Rc::new(RefCell::new(None));
     let error_slot = startup_error.clone();
+
+    let ipc_served = ipc.is_some();
 
     Application::new().with_assets(Assets).run(move |cx: &mut App| {
         gpui_component::init(cx);
@@ -58,6 +76,10 @@ fn main() -> anyhow::Result<()> {
             |window, cx| {
                 apply_theme(engine.settings().theme, window, cx);
                 let view = cx.new(|cx| Sideport::new(engine, window, cx));
+
+                if ipc_served {
+                    view.update(cx, |view, cx| view.listen_for_ipc(window, cx));
+                }
 
                 if let Some(source) = arguments.source {
                     view.update(cx, |view, cx| view.load_path(source, window, cx));
@@ -95,11 +117,22 @@ fn main() -> anyhow::Result<()> {
         cx.activate(true);
     });
 
+    drop(ipc);
+
     if let Some(error) = startup_error.borrow_mut().take() {
         return Err(error);
     }
 
     Ok(())
+}
+
+/// Ask a running Sideport on this data directory to come forward and open `source`; `true` when
+/// it agreed.
+fn forward_to_running_app(engine: &Engine, source: Option<&std::path::Path>) -> bool {
+    let file = source.map(|source| std::path::absolute(source).unwrap_or_else(|_| source.to_path_buf()));
+    let file = file.as_ref().map(|file| file.to_string_lossy());
+
+    engine.ipc_client(None).and_then(|client| client.raise(file.as_deref())).unwrap_or(false)
 }
 
 fn bind_keys(cx: &mut App) {

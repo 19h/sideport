@@ -8,6 +8,7 @@ mod anisette;
 mod auth;
 mod devices;
 mod files;
+mod ipc;
 mod mac;
 mod portal;
 mod provision;
@@ -24,6 +25,7 @@ use crate::types::*;
 pub use anisette::MachineAnisette;
 pub use devices::DeviceBackend;
 use futures::channel::oneshot;
+pub use ipc::IpcServer;
 pub use mac::{MacTarget, MacTargetSetting};
 use parking_lot::{Mutex, RwLock};
 use std::collections::BTreeMap;
@@ -91,6 +93,8 @@ struct Inner {
     accounts: Mutex<BTreeMap<String, LiveAccount>>,
     demo: Option<Demo>,
     next_job: AtomicU64,
+    /// Messages for other processes' `/poll` and the sign-in waiting for `/tokens`.
+    ipc: ipc::Mailbox,
     /// Owned by the [`Engine`] handles; jobs and background tasks publish through this weak
     /// reference, so dropping the last handle closes every subscription channel.
     subscribers: std::sync::Weak<Subscribers>,
@@ -100,6 +104,7 @@ struct Inner {
 struct Subscribers {
     devices: Mutex<Vec<async_channel::Sender<Vec<DeviceInfo>>>>,
     refresh: Mutex<Vec<async_channel::Sender<RefreshEvent>>>,
+    ipc: Mutex<Vec<async_channel::Sender<crate::ipc::IpcEvent>>>,
 }
 
 impl Inner {
@@ -173,6 +178,12 @@ impl Inner {
     fn publish_refresh(&self, event: &RefreshEvent) {
         if let Some(subscribers) = self.subscribers.upgrade() {
             subscribers.refresh.lock().retain(|sender| sender.force_send(event.clone()).is_ok());
+        }
+    }
+
+    fn publish_ipc(&self, event: &crate::ipc::IpcEvent) {
+        if let Some(subscribers) = self.subscribers.upgrade() {
+            subscribers.ipc.lock().retain(|sender| sender.force_send(event.clone()).is_ok());
         }
     }
 }
@@ -267,6 +278,7 @@ impl Engine {
                 accounts: Mutex::new(accounts),
                 demo,
                 next_job: AtomicU64::new(1),
+                ipc: ipc::Mailbox::new(),
                 subscribers: Arc::downgrade(&subscribers),
             }),
         };
@@ -737,6 +749,44 @@ impl Engine {
         subscribers.push(tx);
 
         rx
+    }
+
+    // --------------------------------------------------------------------------------------------
+    // Local IPC
+
+    /// Serve local IPC for this data directory on `port` (default [`crate::ipc::DEFAULT_PORT`];
+    /// 0 picks a free port). Fails when the port is taken, typically by a running Sideport, which
+    /// [`Engine::ipc_client`] can then reach. The server stops when the handle is dropped.
+    pub fn serve_ipc(&self, port: Option<u16>) -> Result<IpcServer> {
+        ipc::serve(&self.inner, port.unwrap_or(crate::ipc::DEFAULT_PORT))
+    }
+
+    /// A client for the process serving this data directory's IPC.
+    pub fn ipc_client(&self, port: Option<u16>) -> Result<crate::ipc::IpcClient> {
+        crate::ipc::IpcClient::new(&self.inner.data_dir, port.unwrap_or(crate::ipc::DEFAULT_PORT))
+    }
+
+    /// Requests other processes made of this one through its IPC server.
+    pub fn subscribe_ipc(&self) -> async_channel::Receiver<crate::ipc::IpcEvent> {
+        let (tx, rx) = async_channel::bounded(16);
+        let mut subscribers = self.subscribers.ipc.lock();
+        subscribers.retain(|sender| !sender.is_closed());
+        subscribers.push(tx);
+
+        rx
+    }
+
+    /// Leave a message for a process polling this one; the ten newest are kept.
+    pub fn leave_message(&self, message: impl Into<String>) {
+        self.inner.ipc.leave(message.into());
+    }
+
+    /// Wait for the browser to return a sign-in token to `/tokens`. A later call replaces this
+    /// waiter, which then resolves to [`EngineError::Cancelled`].
+    pub fn await_sign_in_token(&self) -> impl Future<Output = Result<String>> + use<> {
+        let token = self.inner.ipc.expect_sign_in();
+
+        async move { token.await.map_err(|_| EngineError::Cancelled) }
     }
 
     // --------------------------------------------------------------------------------------------

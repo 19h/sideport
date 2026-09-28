@@ -3,7 +3,7 @@
 use crate::jobs::{self, Answers};
 use crate::{
     AccountCommand, Cli, Command, DeviceCommand, ExportArgs, ExportMode, Fixtures, InstallArgs, InstallMode,
-    InstallationCommand, SettingsCommand,
+    InstallationCommand, IpcCommand, SettingsCommand,
 };
 use anyhow::{Context, Result, bail};
 use futures::executor::block_on;
@@ -57,6 +57,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             print(&serde_json::json!({ "refreshed": refreshed }), json, |_| println!("Refreshed {refreshed}"))
         }
         Command::Daemon => daemon(engine),
+        Command::Ipc { port, command } => ipc(&engine, port, command, json),
     }
 }
 
@@ -521,4 +522,43 @@ fn daemon(engine: Engine) -> Result<()> {
     let _ = stopped.recv();
 
     Ok(())
+}
+
+fn ipc(engine: &Engine, port: u16, command: IpcCommand, json: bool) -> Result<()> {
+    let client = engine.ipc_client(Some(port))?;
+
+    match command {
+        IpcCommand::Raise { open } => {
+            let file = open.map(std::path::absolute).transpose().context("resolve the file to open")?;
+            let raised = client.raise(file.as_ref().and_then(|file| file.to_str()))?;
+
+            print(&serde_json::json!({ "raised": raised }), json, |_| {
+                println!("{}", if raised { "Sideport came forward" } else { "Sideport did not answer success" });
+            })
+        }
+
+        IpcCommand::Enqueue { installation_id } => {
+            client.enqueue(installation_id)?;
+
+            print(&serde_json::json!({ "enqueued": installation_id }), json, |_| {
+                println!("Queued installation {installation_id} for refresh");
+            })
+        }
+
+        IpcCommand::Poll => {
+            let reply = match client.poll()? {
+                sl_engine::ipc::PollReply::Message(message) => message,
+                sl_engine::ipc::PollReply::VersionMismatch => bail!("the running app is another Sideport version"),
+                sl_engine::ipc::PollReply::Bye => bail!("the running app stopped"),
+            };
+
+            print(&serde_json::json!({ "message": reply }), json, |_| println!("{reply}"))
+        }
+
+        IpcCommand::Restart { message } => {
+            client.restart(message.as_deref())?;
+
+            print(&serde_json::json!({ "restart": true }), json, |_| println!("Asked Sideport to exit"))
+        }
+    }
 }

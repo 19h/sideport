@@ -93,6 +93,29 @@ enum Command {
     RefreshDue,
     /// Run the refresh scheduler until interrupted.
     Daemon,
+    /// Talk to the running desktop app over local IPC.
+    Ipc {
+        /// IPC port of the running app.
+        #[arg(long, default_value_t = sl_engine::ipc::DEFAULT_PORT)]
+        port: u16,
+        #[command(subcommand)]
+        command: IpcCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum IpcCommand {
+    /// Bring the app forward, optionally opening an app file in it.
+    Raise {
+        #[arg(long, value_name = "FILE")]
+        open: Option<PathBuf>,
+    },
+    /// Queue an installation's refresh in the app.
+    Enqueue { installation_id: i64 },
+    /// Wait for the next message the app leaves.
+    Poll,
+    /// Ask the app to exit.
+    Restart { message: Option<String> },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

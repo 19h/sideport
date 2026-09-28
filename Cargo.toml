@@ -68,6 +68,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 tokio-util = "0.7"
 futures = "0.3"
 async-channel = "2"
+httparse = "1.10"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json", "gzip", "http2", "cookies"] }
 idevice = { version = "0.1.68", default-features = false, features = ["ring", "usbmuxd", "afc", "installation_proxy", "misagent", "notification_proxy", "pair", "syslog_relay"] }
 

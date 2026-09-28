@@ -27,6 +27,9 @@ pub enum EngineError {
     Network(String),
     #[error("Storage error: {0}")]
     Storage(String),
+    /// Talking to another Sideport process on this machine failed.
+    #[error("Local connection failed: {0}")]
+    Ipc(String),
     #[error("{0}")]
     Unsupported(String),
     #[error("{0}")]

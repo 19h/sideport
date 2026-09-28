@@ -7,6 +7,7 @@ pub mod autostart;
 mod demo;
 mod engine;
 pub mod error;
+pub mod ipc;
 pub mod job;
 mod pipeline;
 mod secrets;
@@ -14,7 +15,9 @@ mod settings;
 mod store;
 pub mod types;
 
-pub use engine::{DeviceBackend, Engine, EngineConfig, MacTarget, MacTargetSetting, MachineAnisette, RefreshEvent};
+pub use engine::{
+    DeviceBackend, Engine, EngineConfig, IpcServer, MacTarget, MacTargetSetting, MachineAnisette, RefreshEvent,
+};
 pub use error::{EngineError, Result};
 pub use job::{Fact, JobContext, JobEvent, JobHandle, LogLevel, Prompt, PromptKind, PromptReply, Stage, TeamChoice};
 pub use types::*;
