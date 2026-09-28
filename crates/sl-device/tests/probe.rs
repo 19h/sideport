@@ -32,6 +32,16 @@ async fn attached_devices_answer_lockdown_and_afc_queries() {
             }
             Err(error) => println!("{}: session unavailable: {error}", device.udid),
         }
+
+        // Read-only: ask the image mounter whether a developer image is mounted (no upload/mount).
+        match sl_device::mounter::IdeviceMounter::connect(&mux, &device.udid).await {
+            Ok(mut mounter) => {
+                use sl_device::mounter::ImageMounting;
+
+                println!("{}: developer image mounted: {:?}", device.udid, mounter.mounted().await);
+            }
+            Err(error) => println!("{}: image mounter unavailable: {error}", device.udid),
+        }
     }
 }
 

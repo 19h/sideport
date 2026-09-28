@@ -1,10 +1,11 @@
 //! `idevice` implementations of the installation traits and device utilities.
 
 use crate::error::{DeviceError, Result};
+use crate::framing::PlistStream;
 use crate::install::{Connector, InstallStatus, Session, Staging};
 use crate::mux::Mux;
-use futures::FutureExt;
 use futures::future::BoxFuture;
+use futures::{FutureExt, StreamExt};
 use idevice::afc::errors::AfcError;
 use idevice::afc::opcode::AfcFopenMode;
 use idevice::afc::{AfcClient, file::OwnedFileDescriptor};
@@ -12,12 +13,8 @@ use idevice::installation_proxy::InstallationProxyClient;
 use idevice::lockdown::LockdownClient;
 use idevice::misagent::MisagentClient;
 use idevice::provider::{IdeviceProvider, UsbmuxdProvider};
-use idevice::{IdeviceError, IdeviceService, ReadWrite};
+use idevice::{IdeviceError, IdeviceService};
 use plist::{Dictionary, Value};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-/// Largest installation-proxy message accepted from a device.
-const MAX_MESSAGE_BYTES: u32 = 16 * 1024 * 1024;
 
 /// Connects through the system usbmuxd.
 #[derive(Debug, Clone)]
@@ -124,54 +121,6 @@ pub fn install_error(message: &Dictionary) -> Option<DeviceError> {
     let detail = message.get("ErrorDetail").and_then(Value::as_unsigned_integer);
 
     Some(DeviceError::Install { name, description, detail })
-}
-
-/// Length-prefixed plist messages (32-bit big-endian length, then the plist) over a service
-/// socket, as lockdown services frame them.
-struct PlistStream {
-    socket: Box<dyn ReadWrite>,
-}
-
-impl PlistStream {
-    fn new(socket: Box<dyn ReadWrite>) -> Self {
-        Self { socket }
-    }
-
-    async fn send(&mut self, message: &Dictionary) -> Result<()> {
-        let mut body = Vec::new();
-        Value::Dictionary(message.clone())
-            .to_writer_xml(&mut body)
-            .map_err(|error| DeviceError::Protocol(error.to_string()))?;
-
-        let length = u32::try_from(body.len()).map_err(|_| DeviceError::Protocol("message too large".into()))?;
-
-        self.socket.write_all(&length.to_be_bytes()).await.map_err(io_error)?;
-        self.socket.write_all(&body).await.map_err(io_error)?;
-        self.socket.flush().await.map_err(io_error)
-    }
-
-    async fn receive(&mut self) -> Result<Dictionary> {
-        let mut header = [0; 4];
-        self.socket.read_exact(&mut header).await.map_err(io_error)?;
-
-        let length = u32::from_be_bytes(header);
-
-        if length > MAX_MESSAGE_BYTES {
-            return Err(DeviceError::Protocol(format!("device message of {length} bytes exceeds 16 MiB")));
-        }
-
-        let mut body = vec![0; length as usize];
-        self.socket.read_exact(&mut body).await.map_err(io_error)?;
-
-        let value =
-            Value::from_reader(std::io::Cursor::new(body)).map_err(|error| DeviceError::Protocol(error.to_string()))?;
-
-        value.into_dictionary().ok_or_else(|| DeviceError::Protocol("device message is not a dictionary".into()))
-    }
-}
-
-fn io_error(error: std::io::Error) -> DeviceError {
-    DeviceError::Interrupted(error.to_string())
 }
 
 /// AFC staging with one open append handle at a time.
@@ -405,6 +354,105 @@ pub async fn install_profile(provider: &UsbmuxdProvider, profile: Vec<u8>) -> Re
     misagent.install(profile).await.map_err(DeviceError::from)
 }
 
+/// Where an installed app lives, for the JIT launch/attach (recovered `GetPathForBundleId` +
+/// `GetWorkingDirAndExeNameForBundleId`, via the installation proxy `Lookup`).
+pub async fn app_launch(provider: &UsbmuxdProvider, bundle_id: &str) -> Result<crate::jit::AppLaunch> {
+    let mut proxy = InstallationProxyClient::connect(provider).await?;
+    let apps = proxy.get_apps(Some("Any"), Some(vec![bundle_id.to_owned()])).await?;
+
+    let info = apps
+        .get(bundle_id)
+        .and_then(Value::as_dictionary)
+        .ok_or_else(|| DeviceError::Protocol(format!("app {bundle_id} is not installed")))?;
+
+    let text = |key: &str| info.get(key).and_then(Value::as_string).map(str::to_owned);
+
+    let path = text("Path").ok_or_else(|| DeviceError::Protocol("app has no bundle path".into()))?;
+    let executable = text("CFBundleExecutable").ok_or_else(|| DeviceError::Protocol("app has no executable".into()))?;
+
+    Ok(crate::jit::AppLaunch { path, container: text("Container"), executable })
+}
+
+/// One heartbeat round trip (`Marco`/`Polo`); the returned interval proves the device is
+/// reachable. Network and tvOS devices need a running heartbeat to keep services open.
+pub async fn heartbeat(provider: &UsbmuxdProvider) -> Result<u64> {
+    let mut client = idevice::heartbeat::HeartbeatClient::connect(provider).await?;
+
+    let interval = client.get_marco(15).await?;
+    client.send_polo().await?;
+
+    Ok(interval)
+}
+
+/// Observe device notifications (recovered `notification_proxy`), e.g.
+/// `com.apple.mobile.application_installed`, delivered until the stream is dropped.
+pub async fn observe(provider: &UsbmuxdProvider, names: &[String]) -> Result<LineStream> {
+    let mut client = idevice::notification_proxy::NotificationProxyClient::connect(provider).await?;
+
+    let borrowed: Vec<&str> = names.iter().map(String::as_str).collect();
+    client.observe_notifications(&borrowed).await?;
+
+    let stream = client.into_stream().map(|item| item.map_err(DeviceError::from));
+
+    Ok(Box::pin(stream))
+}
+
+/// Unpair from the device and drop the usbmuxd record (recovered `RepairPairing` first half).
+pub async fn unpair(mux: &Mux, udid: &str) -> Result<()> {
+    let provider = mux.provider(udid, false).await?;
+    let pairing = provider.get_pairing_file().await.map_err(|_| DeviceError::NotPaired)?;
+    let host_id = pairing.host_id.clone();
+
+    let mut lockdown = LockdownClient::connect(&provider).await?;
+    lockdown.unpair(host_id).await?;
+
+    let mut connection = mux_connection(mux).await?;
+    let _ = connection.delete_pair_record(udid).await;
+
+    Ok(())
+}
+
+/// debugserver over `idevice`'s debug proxy (recovered `getDebugServer`: the TLS
+/// `DVTSecureSocketProxy` service first, then plain `com.apple.debugserver`).
+pub struct IdeviceDebugger {
+    proxy: idevice::debug_proxy::DebugProxyClient<Box<dyn idevice::ReadWrite>>,
+}
+
+impl std::fmt::Debug for IdeviceDebugger {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("IdeviceDebugger").finish_non_exhaustive()
+    }
+}
+
+impl IdeviceDebugger {
+    pub async fn connect(mux: &Mux, udid: &str) -> Result<Self> {
+        let provider = mux.provider(udid, false).await?;
+
+        let socket = match crate::service::open::<crate::service::SecureDebugServer>(&provider).await {
+            Ok(socket) => socket,
+            Err(_) => crate::service::open::<crate::service::DebugServer>(&provider).await?,
+        };
+
+        Ok(Self { proxy: idevice::debug_proxy::DebugProxyClient::new(socket) })
+    }
+}
+
+impl crate::jit::Debugger for IdeviceDebugger {
+    fn command<'a>(&'a mut self, name: &'a str, argv: &'a [String]) -> BoxFuture<'a, Result<Option<String>>> {
+        async move {
+            let command = idevice::debug_proxy::DebugserverCommand::new(name.to_owned(), argv.to_vec());
+            let response = self.proxy.send_command(command).await?;
+
+            crate::jit::interpret(name, response)
+        }
+        .boxed()
+    }
+
+    fn set_argv<'a>(&'a mut self, argv: &'a [String]) -> BoxFuture<'a, Result<String>> {
+        async move { self.proxy.set_argv(argv.to_vec()).await.map_err(DeviceError::from) }.boxed()
+    }
+}
+
 /// Everything the engine needs from a device layer: installation sessions plus discovery and
 /// utilities. [`IdeviceBackend`] uses the system usbmuxd; tests provide fakes.
 pub trait Backend: Connector {
@@ -426,8 +474,26 @@ pub trait Backend: Connector {
     /// Pair and store the record with usbmuxd; the device shows "Trust This Computer?".
     fn pair<'a>(&'a self, udid: &'a str) -> BoxFuture<'a, Result<()>>;
 
+    /// Unpair (drops the device and usbmuxd records) for pairing repair.
+    fn unpair<'a>(&'a self, udid: &'a str) -> BoxFuture<'a, Result<()>>;
+
     /// Lines from the device's syslog relay until the stream is dropped.
     fn syslog<'a>(&'a self, udid: &'a str) -> BoxFuture<'a, Result<LineStream>>;
+
+    /// A connected image mounter for Developer Disk Image operations.
+    fn image_mounter<'a>(&'a self, udid: &'a str) -> BoxFuture<'a, Result<Box<dyn crate::mounter::ImageMounting>>>;
+
+    /// A connected debugserver for JIT.
+    fn debugserver<'a>(&'a self, udid: &'a str) -> BoxFuture<'a, Result<Box<dyn crate::jit::Debugger>>>;
+
+    /// Where an installed app lives, for the JIT launch/attach.
+    fn app_launch<'a>(&'a self, udid: &'a str, bundle_id: &'a str) -> BoxFuture<'a, Result<crate::jit::AppLaunch>>;
+
+    /// One heartbeat round trip; the interval proves the device is reachable.
+    fn heartbeat<'a>(&'a self, udid: &'a str) -> BoxFuture<'a, Result<u64>>;
+
+    /// Observe device notifications until the stream is dropped.
+    fn observe<'a>(&'a self, udid: &'a str, names: &'a [String]) -> BoxFuture<'a, Result<LineStream>>;
 }
 
 /// Device log lines.
@@ -492,8 +558,44 @@ impl Backend for IdeviceBackend {
         async move { pair(self.mux(), udid).await }.boxed()
     }
 
+    fn unpair<'a>(&'a self, udid: &'a str) -> BoxFuture<'a, Result<()>> {
+        async move { unpair(self.mux(), udid).await }.boxed()
+    }
+
     fn syslog<'a>(&'a self, udid: &'a str) -> BoxFuture<'a, Result<LineStream>> {
         async move { syslog(&self.mux().provider(udid, false).await?).await }.boxed()
+    }
+
+    fn image_mounter<'a>(&'a self, udid: &'a str) -> BoxFuture<'a, Result<Box<dyn crate::mounter::ImageMounting>>> {
+        async move {
+            let mounter = crate::mounter::IdeviceMounter::connect(self.mux(), udid).await?;
+            let mounter: Box<dyn crate::mounter::ImageMounting> = Box::new(mounter);
+
+            Ok(mounter)
+        }
+        .boxed()
+    }
+
+    fn debugserver<'a>(&'a self, udid: &'a str) -> BoxFuture<'a, Result<Box<dyn crate::jit::Debugger>>> {
+        async move {
+            let debugger = IdeviceDebugger::connect(self.mux(), udid).await?;
+            let debugger: Box<dyn crate::jit::Debugger> = Box::new(debugger);
+
+            Ok(debugger)
+        }
+        .boxed()
+    }
+
+    fn app_launch<'a>(&'a self, udid: &'a str, bundle_id: &'a str) -> BoxFuture<'a, Result<crate::jit::AppLaunch>> {
+        async move { app_launch(&self.mux().provider(udid, false).await?, bundle_id).await }.boxed()
+    }
+
+    fn heartbeat<'a>(&'a self, udid: &'a str) -> BoxFuture<'a, Result<u64>> {
+        async move { heartbeat(&self.mux().provider(udid, false).await?).await }.boxed()
+    }
+
+    fn observe<'a>(&'a self, udid: &'a str, names: &'a [String]) -> BoxFuture<'a, Result<LineStream>> {
+        async move { observe(&self.mux().provider(udid, false).await?, names).await }.boxed()
     }
 }
 

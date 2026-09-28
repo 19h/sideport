@@ -57,6 +57,14 @@ pub enum DeviceError {
     #[error("local I/O error: {0}")]
     Local(String),
 
+    /// A remote service other than the device failed (for example Apple's TSS signing server).
+    #[error("{0}")]
+    Remote(String),
+
+    /// The operation is not available for this device or device layer.
+    #[error("{0}")]
+    Unsupported(String),
+
     #[error("cancelled")]
     Cancelled,
 }
@@ -114,6 +122,8 @@ impl DeviceError {
             | Self::Afc { .. }
             | Self::Protocol(_)
             | Self::Local(_)
+            | Self::Remote(_)
+            | Self::Unsupported(_)
             | Self::Cancelled => Recovery::Fatal,
         }
     }

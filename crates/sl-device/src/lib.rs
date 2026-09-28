@@ -7,14 +7,24 @@
 #![forbid(unsafe_code)]
 
 pub mod backend;
+pub mod ddi;
 pub mod error;
+pub mod framing;
 pub mod install;
+pub mod jit;
 pub mod models;
+pub mod mounter;
 pub mod mux;
+pub mod service;
+pub mod tss;
 
 pub use backend::{Backend, DeviceValues, IdeviceBackend, IdeviceConnector, InstalledApp, LineStream};
+pub use ddi::{Catalog, Outcome, Plan, Store};
 pub use error::{DeviceError, Recovery, Result};
 pub use install::{
     Connector, Delegate, DeviceWait, FilePackage, InstallRequest, Package, PackageReader, Phase, Question,
 };
+pub use jit::{AppLaunch, Debugger};
+pub use mounter::{ImageMounting, Mounted};
 pub use mux::{Attached, EventStream, Link, Mux, MuxEvent};
+pub use tss::TssClient;

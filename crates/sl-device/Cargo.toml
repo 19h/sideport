@@ -13,14 +13,21 @@ tracing.workspace = true
 plist.workspace = true
 idevice.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 futures.workspace = true
 bytes.workspace = true
 chrono.workspace = true
 gethostname.workspace = true
 uuid.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+zip.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
+wiremock.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true
