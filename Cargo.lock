@@ -7401,6 +7401,7 @@ dependencies = [
  "indicatif",
  "plist",
  "predicates",
+ "rusqlite",
  "serde",
  "serde_json",
  "sl-acquire",

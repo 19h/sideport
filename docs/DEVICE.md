@@ -81,8 +81,10 @@ one hour (a crashed process) is taken over, and so is one more than five minutes
 (the clock was set back since it was written); the crashed or displaced process can no longer
 clear the entry. Due selection compares expiry with the current clock, so a clock set forward makes
 installations due at once and one set back defers them. Store and selection fixtures cover the
-crash takeover, both clock directions and the five-minute tolerance; multi-process crash tests
-with real processes remain open. The desktop app's local IPC also queues a refresh through
+crash takeover, both clock directions and the five-minute tolerance. A real-process test kills
+a `sideport refresh-due` process while it holds a claim, shows that another pass within the hour
+leaves the claim alone, then ages the claim and shows the next pass takes the entry over, runs
+it and records the failure (`crates/sl-cli/tests/processes.rs`). The desktop app's local IPC also queues a refresh through
 `/enqueue` (docs/ENGINE.md).
 
 ## Device log

@@ -38,6 +38,7 @@ tokio.workspace = true
 wiremock.workspace = true
 sl-testkit.workspace = true
 der.workspace = true
+rusqlite.workspace = true
 
 [lints]
 workspace = true
