@@ -12,6 +12,7 @@ sl-bundle.workspace = true
 sl-codesign.workspace = true
 sl-apple.workspace = true
 sl-device.workspace = true
+sl-acquire.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 serde.workspace = true
@@ -40,6 +41,7 @@ sl-macos.workspace = true
 
 [dev-dependencies]
 sl-macho.workspace = true
+sha1.workspace = true
 sl-testkit.workspace = true
 uuid.workspace = true
 wiremock.workspace = true

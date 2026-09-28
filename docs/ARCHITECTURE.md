@@ -25,7 +25,7 @@ server implementations are unknown.
 | USB/Wi-Fi discovery, lockdown/pairing, AFC resumable file/ZIP upload, installation retry/progress | `sl-device` usbmuxd discovery/watch, lockdown values, pairing, AFC staging, framed installation proxy, recovered retry policy, deterministic ZIP streaming with backpressure; engine device jobs; 11 fault-injection and 4 engine fixtures; read-only probe of a USB iPhone (docs/DEVICE.md) | Physical installation, Wi-Fi and tvOS PIN pairing verification |
 | Apps/profiles management, syslog, Developer Disk Images and JIT | App list/uninstall and profile list/remove through the device layer with fixtures | Syslog, Developer Disk Images, JIT and physical verification |
 | Apple Silicon conversion, entitlement adjustments, SINF enrichment and application installation | Pending | Implementation and native Mac verification |
-| URI/download channels, HTTP resume, App Store authentication/purchase/download, FairPlay metadata/kbsync | Pending | Client implementation, controlled transport fixtures and live service verification |
+| URI/download channels, HTTP resume, App Store authentication/purchase/download, FairPlay metadata/kbsync | `sl-acquire`: `sideloadly:` link parser with the recovered rules/messages and 155-country table, resumable Range downloads with recovered backoff, HTML/non-ZIP rejection, MD5/SHA-1 verification, flipped storage and `EnrichIpa`; engine/CLI accept links as job sources; 13 fixtures and an engine test (docs/ACQUIRE.md) | App Store authentication/purchase/download and kbsync; live link sources |
 | Stored files, installations DB, refresh policy/scheduler, tray/autostart and local IPC | SQLite accounts/certificates/installations with content-addressed stored inputs; device jobs record installations; refresh replay; scheduler with due selection, reachability and cross-process claims; fixtures | Tray/autostart, local IPC, clock-shift and crash tests |
 | Feature tokens, Patreon OAuth, private remote providers and update/version protocol | Pending | Configurable client implementations, recovered protocol fixtures; server behavior remains unknown |
 | CLI and intuitive GPUI interface covering the workflows above | CLI inspection/export/JSON/typed edits/injection/cancellation; official Zed GPUI inspection/editor/export with native pickers, progress, prompts, cancellation and themes; real engine/GPUI interaction tests and native window inspection | Remaining CLI/desktop workflows; complete accessibility, additional platform/runtime and full account/device user-flow evidence |
@@ -40,6 +40,7 @@ covered behavior, not completion of a workflow that depends on accounts, devices
 - sl-bundle: archive preparation, bundle editing, injection and ordered signing.
 - sl-apple: authentication, anisette, portal and Store clients.
 - sl-device: device transports, services, installation and utilities (docs/DEVICE.md).
+- sl-acquire: `sideloadly:` links, resumable downloads and IPA enrichment.
 - sl-macos: AOSKit local anisette and the Mac's identity (the only crate with `unsafe` Objective-C calls).
 - sl-testkit: test-only generated PKI, signed profiles, fake portal and fake device layer.
 - sl-engine: jobs, policies, storage, refresh, IPC and integration.

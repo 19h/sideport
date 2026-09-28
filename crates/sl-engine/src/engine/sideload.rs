@@ -2,7 +2,7 @@
 
 use super::devices::{self, device_error};
 use super::provision::{self, DeviceTarget, ProvisionRequest, Provisioned};
-use super::{Inner, files};
+use super::{Inner, acquire, files};
 use crate::error::{EngineError, Result};
 use crate::job::{JobContext, PromptKind, PromptReply, Stage};
 use crate::pipeline::{self, IdentityPlan, Inspected, SigningPlan};
@@ -26,7 +26,23 @@ const STREAM_COMPRESSION: u32 = 1;
 const STREAM_BLOCK: usize = 256 * 1024;
 const STREAM_DEPTH: usize = 8;
 
-pub(super) async fn run(inner: Arc<Inner>, context: JobContext, spec: JobSpec) -> Result<JobOutcome> {
+pub(super) async fn run(inner: Arc<Inner>, context: JobContext, mut spec: JobSpec) -> Result<JobOutcome> {
+    if !acquire::is_remote(&spec.source) {
+        return dispatch(inner, context, spec).await;
+    }
+
+    // A downloaded source is removed after the job; tracked installations keep their own copy.
+    let source = spec.source.to_string_lossy().into_owned();
+    let downloaded = acquire::fetch(&inner, &context, &source).await?;
+
+    spec.source = downloaded.clone();
+    let outcome = dispatch(inner, context, spec).await;
+    let _ = std::fs::remove_file(&downloaded);
+
+    outcome
+}
+
+async fn dispatch(inner: Arc<Inner>, context: JobContext, spec: JobSpec) -> Result<JobOutcome> {
     match (&spec.signing, &spec.target) {
         (_, Target::Device { .. }) => install_job(inner, context, spec).await,
         (SigningMode::AppleId { .. }, Target::ExportIpa { .. }) => apple_id_export(inner, context, spec).await,

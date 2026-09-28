@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 sl-engine.workspace = true
 sl-codesign.workspace = true
+sl-acquire.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 tokio-util.workspace = true

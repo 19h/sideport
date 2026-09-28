@@ -6316,6 +6316,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "sl-acquire"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "futures",
+ "hex",
+ "md-5",
+ "reqwest",
+ "sha1",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "url",
+ "wiremock",
+ "zip",
+]
+
+[[package]]
 name = "sl-app"
 version = "0.1.0"
 dependencies = [
@@ -6417,6 +6437,7 @@ dependencies = [
  "predicates",
  "serde",
  "serde_json",
+ "sl-acquire",
  "sl-codesign",
  "sl-engine",
  "sl-macho",
@@ -6493,7 +6514,9 @@ dependencies = [
  "security-framework",
  "serde",
  "serde_json",
+ "sha1",
  "sha2 0.10.9",
+ "sl-acquire",
  "sl-apple",
  "sl-bundle",
  "sl-codesign",

@@ -319,3 +319,52 @@ fn apple_codesign_accepts_an_ipa_processed_through_the_real_engine() {
 
     assert!(!tampered.status.success());
 }
+
+#[test]
+fn remote_sources_are_downloaded_verified_and_removed_after_the_job() {
+    use sha1::Digest as _;
+
+    let temporary = tempfile::tempdir().expect("tempdir");
+    let root = temporary.path().join("Test.app");
+    common::synthetic_bundle(&root, "com.example.remote", "Test", "APPL");
+
+    let archive =
+        BundleArchive::unpack(&root, ArchiveLimits::default(), sl_bundle::Control::default()).expect("unpack");
+    let ipa = temporary.path().join("remote.ipa");
+    archive.save(&ipa, OutputLayout::Ipa, PackOptions::default(), sl_bundle::Control::default()).expect("pack");
+    let bytes = fs::read(&ipa).expect("IPA bytes");
+    let digest = hex::encode(sha1::Sha1::digest(&bytes));
+
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let server = runtime.block_on(wiremock::MockServer::start());
+    runtime.block_on(
+        wiremock::Mock::given(wiremock::matchers::path("/remote.ipa"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_bytes(bytes.clone()))
+            .mount(&server),
+    );
+
+    let engine = engine(temporary.path());
+    let link = format!("sideloadly:?dn=Remote.ipa&xs={}/remote.ipa&h={digest}", server.uri());
+    let output = temporary.path().join("exported.ipa");
+
+    let outcome = block_on(engine.start(spec(link.into(), Some(output.clone()), SigningMode::Unsigned)).result());
+    assert_eq!(outcome.expect("remote export").bundle_id, "com.example.remote");
+    assert!(output.is_file());
+
+    let downloads = temporary.path().join("data/downloads");
+    assert_eq!(fs::read_dir(&downloads).expect("downloads").count(), 0, "the job's download is removed");
+
+    let cached = block_on(engine.download(format!("{}/remote.ipa", server.uri())).result()).expect("download");
+    assert_eq!(sl_acquire::download::read_plain(&cached, true).expect("plain"), bytes);
+
+    let wrong = format!("sideloadly:?xs={}/remote.ipa&h={}", server.uri(), "0".repeat(40));
+    let rejected = block_on(
+        engine.start(spec(wrong.into(), Some(temporary.path().join("x.ipa")), SigningMode::Unsigned)).result(),
+    );
+    assert!(matches!(rejected, Err(EngineError::Network(message)) if message.contains("Hash mismatch")));
+
+    let store = block_on(
+        engine.start(spec("sideloadly:?c=US&bi=com.example.app".into(), None, SigningMode::Unsigned)).result(),
+    );
+    assert!(matches!(store, Err(EngineError::Unsupported(_))));
+}

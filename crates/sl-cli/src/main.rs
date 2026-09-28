@@ -47,6 +47,13 @@ enum Command {
     Install(Box<InstallArgs>),
     /// Execute a serialized engine JobSpec.
     Run { spec: PathBuf },
+    /// Download a `sideloadly:` link or HTTP(S) IPA URL. Sources of other commands may also be links.
+    Download {
+        link: String,
+        /// Copy the (unflipped) IPA here instead of printing the cached path.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
     /// Check an anisette provider and describe the machine Apple will list.
     Anisette {
         #[arg(long, value_name = "URL", required_unless_present = "local", conflicts_with = "local")]

@@ -3,6 +3,7 @@
 //! All async methods are executor-agnostic: work is spawned onto the engine's own tokio runtime and the
 //! returned future only awaits a oneshot, so gpui (or any executor) can drive it.
 
+mod acquire;
 mod anisette;
 mod auth;
 mod devices;
@@ -508,6 +509,13 @@ impl Engine {
                 None => sideload::run(inner, ctx, spec).await,
             }
         })
+    }
+
+    /// Download a `sideloadly:` link or HTTP(S) IPA URL into the downloads directory.
+    pub fn download(&self, source: String) -> JobHandle<PathBuf> {
+        let inner = self.inner.clone();
+
+        self.job(move |context| async move { acquire::fetch(&inner, &context, &source).await })
     }
 
     // --------------------------------------------------------------------------------------------

@@ -29,6 +29,7 @@ sl-device = { path = "crates/sl-device" }
 sl-engine = { path = "crates/sl-engine" }
 sl-testkit = { path = "crates/sl-testkit" }
 sl-macos = { path = "crates/sl-macos" }
+sl-acquire = { path = "crates/sl-acquire" }
 
 # errors / logging
 thiserror = "2"

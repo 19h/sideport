@@ -26,6 +26,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             outcome(jobs::run(engine.start(install_spec(*arguments)), &Answers::default())?, json)
         }
         Command::Run { spec } => outcome(jobs::run(engine.start(read_spec(&spec)?), &Answers::default())?, json),
+        Command::Download { link, output } => download(&engine, link, output, json),
         Command::Anisette { remote, local } => anisette(&engine, remote.filter(|_| !local), json),
         Command::Settings(command) => settings(&engine, command, json),
         Command::Account(command) => account(&engine, command, json),
@@ -191,6 +192,23 @@ fn inspect(engine: &Engine, source: std::path::PathBuf, json: bool) -> Result<()
     }
 
     Ok(())
+}
+
+fn download(engine: &Engine, link: String, output: Option<std::path::PathBuf>, json: bool) -> Result<()> {
+    let cached = jobs::run(engine.download(link), &Answers::default())?;
+
+    let path = match output {
+        Some(output) => {
+            let bytes = sl_acquire::download::read_plain(&cached, true)?;
+            std::fs::write(&output, bytes).with_context(|| format!("write {}", output.display()))?;
+            let _ = std::fs::remove_file(&cached);
+
+            output
+        }
+        None => cached,
+    };
+
+    print(&serde_json::json!({ "path": path }), json, |_| println!("{}", path.display()))
 }
 
 fn anisette(engine: &Engine, remote: Option<String>, json: bool) -> Result<()> {
