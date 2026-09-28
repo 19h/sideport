@@ -6,7 +6,7 @@ use gpui::{
 use gpui_component::{Theme, ThemeMode, input::InputState};
 use sl_engine::{
     AppSummary, Connection, Engine, EngineError, Fact, FileReplacement, JobEvent, JobHandle, JobOutcome, JobSpec,
-    LibraryInjection, LogLevel, PromptKind, PromptReply, SigningMode, Stage, Target, TeamSummary, ThemePreference,
+    LogLevel, PromptKind, PromptReply, SigningMode, Stage, Target, TeamSummary, ThemePreference,
 };
 use std::{
     collections::VecDeque,
@@ -22,11 +22,14 @@ actions!(
 
 mod accounts;
 mod devices;
+mod injections;
 mod installations;
 mod ipc;
 mod links;
+mod services;
 mod settings;
 mod signing;
+mod utilities;
 mod view;
 mod widgets;
 
@@ -106,6 +109,8 @@ struct Fields {
     upload_chunk: Entity<InputState>,
     /// A `sideloadly:` link or HTTP(S) IPA URL to download and open.
     link: Entity<InputState>,
+    /// An `http(s)://` injection source to add.
+    injection_url: Entity<InputState>,
 }
 
 impl Fields {
@@ -118,13 +123,14 @@ impl Fields {
         let minimum_os = input("Minimum OS version");
         let upload_chunk = input("1");
         let link = input("sideloadly: link or https:// IPA URL");
+        let injection_url = input("https://example.com/tweak.deb");
         let overrides = cx.new(|cx| {
             InputState::new(window, cx)
                 .multi_line(true)
                 .placeholder("{\"CustomKey\": \"value\", \"RemoveThisKey\": null}")
         });
 
-        Self { name, identifier, version, short_version, minimum_os, overrides, upload_chunk, link }
+        Self { name, identifier, version, short_version, minimum_os, overrides, upload_chunk, link, injection_url }
     }
 
     fn load(&self, draft: &Draft, window: &mut Window, cx: &mut App) {
@@ -162,6 +168,7 @@ pub(crate) enum PendingAction {
     RevokeCertificate { apple_id: String, serial: String },
     UninstallApp { udid: String, bundle_id: String },
     RemoveProfile { udid: String, uuid: String },
+    RepairPairing { udid: String },
     ForgetInstallation { id: i64 },
 }
 
@@ -222,6 +229,7 @@ pub struct Sideport {
     devices: devices::Devices,
     installations: installations::Installations,
     settings: settings::SettingsForm,
+    updates: services::UpdateCheck,
     advanced_open: bool,
     logs_open: bool,
 }
@@ -305,6 +313,7 @@ impl Sideport {
             devices: devices::Devices::default(),
             installations: installations::Installations::default(),
             settings: settings_form,
+            updates: services::UpdateCheck::default(),
             advanced_open: false,
             logs_open: false,
         };
@@ -313,6 +322,7 @@ impl Sideport {
         sideport.reload_installations();
         sideport.watch_refresh(window, cx);
         sideport.submit_link_on_enter(window, cx);
+        sideport.add_injection_url_on_enter(window, cx);
 
         sideport
     }
@@ -718,6 +728,7 @@ impl Sideport {
         self.busy = false;
         self.cancellation = None;
         self.job_account = None;
+        self.devices.tools.running = None;
         self.close_prompt();
 
         // Jobs can add installations, record refresh failures and choose default teams.
@@ -765,39 +776,6 @@ impl Sideport {
         if self.prepare_close(window, cx) {
             window.remove_window();
         }
-    }
-
-    fn add_injection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.occupied() || self.mode == ExportMode::Original {
-            return;
-        }
-
-        let paths = picker::paths(window, cx, "Choose libraries, frameworks, or resources", true);
-        self.picking = true;
-        self.picker = Some(cx.spawn_in(window, async move |view, cx| {
-            let result = paths.await;
-
-            let _ = view.update_in(cx, |view, window, cx| {
-                view.picking = false;
-                view.focus.focus(window);
-                window.activate_window();
-
-                match result {
-                    Ok(Some(paths)) => {
-                        for source in paths {
-                            if !view.draft.options.injections.iter().any(|item| item.source == source) {
-                                view.draft.options.injections.push(LibraryInjection { source, name: None });
-                            }
-                        }
-                    }
-                    Err(error) => view.error = Some(error.to_string()),
-                    _ => {}
-                }
-
-                cx.notify();
-            });
-        }));
-        cx.notify();
     }
 
     fn file_edit(&mut self, source: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
@@ -989,6 +967,7 @@ impl Sideport {
             }
             PendingAction::UninstallApp { udid, bundle_id } => self.uninstall_app(udid, bundle_id, window, cx),
             PendingAction::RemoveProfile { udid, uuid } => self.remove_profile(udid, uuid, window, cx),
+            PendingAction::RepairPairing { udid } => self.repair_pairing(udid, window, cx),
             PendingAction::ForgetInstallation { id } => self.forget_installation(id, cx),
         }
     }

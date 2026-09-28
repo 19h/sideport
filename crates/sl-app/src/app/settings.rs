@@ -1,4 +1,5 @@
-//! Appearance, Apple sign-in provider, automatic refresh and job defaults.
+//! Appearance, Apple sign-in provider, automatic refresh and job defaults. The private-services
+//! card follows the saved form (`services.rs`).
 
 use super::{
     Sideport, apply_theme,
@@ -397,6 +398,7 @@ impl Sideport {
             .child(refresh)
             .child(defaults)
             .child(actions)
+            .child(self.render_services(cx))
             .into_any_element()
     }
 }

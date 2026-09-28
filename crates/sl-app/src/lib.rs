@@ -11,4 +11,4 @@ pub use app::{
     apply_theme,
 };
 pub use assets::Assets;
-pub use draft::{Draft, ExportMode, IdentifierPolicy};
+pub use draft::{Draft, ExportMode, IdentifierPolicy, InjectionKind, SPECIAL_INJECTIONS, injection_url, validate_icon};

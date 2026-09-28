@@ -1,7 +1,9 @@
-//! Attached devices: discovery, pairing, installed apps and provisioning profiles.
+//! Attached devices: discovery, pairing, installed apps and provisioning profiles. The selected
+//! device's utilities are in `utilities.rs`.
 
 use super::{
     Confirmation, PendingAction, Section, Sideport,
+    utilities::{DeviceTools, jit_eligible},
     widgets::{badge, card, danger_text, format_time, muted, page_title, section_title},
 };
 use gpui::{AnyElement, Context, IntoElement, Task, Window, div, prelude::*, px};
@@ -23,11 +25,12 @@ pub(crate) struct Devices {
     pub(crate) apps: Option<(String, Vec<DeviceApp>)>,
     pub(crate) profiles: Option<(String, Vec<DeviceProfile>)>,
     pub(crate) loading: bool,
-    /// UDID of a device waiting for "Trust This Computer?".
+    /// UDID of a device waiting for "Trust This Computer?" (pairing or pairing repair).
     pub(crate) pairing: Option<String>,
+    pub(crate) tools: DeviceTools,
     watch: Option<Task<()>>,
     listing: Option<Task<()>>,
-    pair_task: Option<Task<()>>,
+    pub(super) pair_task: Option<Task<()>>,
     contents: Option<Task<()>>,
     change: Option<Task<()>>,
 }
@@ -138,7 +141,7 @@ impl Sideport {
         cx.notify();
     }
 
-    fn refresh_devices(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn refresh_devices(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let listed = self.engine.devices();
 
         self.devices.listing = Some(cx.spawn_in(window, async move |view, cx| {
@@ -188,6 +191,10 @@ impl Sideport {
     }
 
     pub(super) fn select_device(&mut self, udid: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.devices.tools.following.as_ref().is_some_and(|following| following != &udid) {
+            self.stop_following_app_changes();
+        }
+
         self.devices.selected = Some(udid);
 
         if self.section == Section::Devices {
@@ -420,15 +427,18 @@ impl Sideport {
         }
 
         let udid = device.udid.clone();
+        let utilities = self.utilities_unavailable(device).is_none();
         let apps = self.devices.apps.as_ref().filter(|(owner, _)| owner == &udid).map(|(_, apps)| apps.as_slice());
         let profiles =
             self.devices.profiles.as_ref().filter(|(owner, _)| owner == &udid).map(|(_, profiles)| profiles.as_slice());
 
         let app_rows = apps.unwrap_or_default().iter().enumerate().map(|(index, app)| {
             let summary = app.clone();
-            let udid = udid.clone();
             let bundle_id = app.bundle_id.clone();
             let version = app.version.as_deref().map(|version| format!(" · {version}")).unwrap_or_default();
+            let offers_jit = utilities && jit_eligible(app, device);
+            let jit = offers_jit.then(|| self.render_jit_button(index, &udid, app, locked, cx));
+            let udid = udid.clone();
 
             div()
                 .flex()
@@ -452,6 +462,7 @@ impl Sideport {
                         )
                         .child(muted(format!("{}{version}", app.bundle_id), cx)),
                 )
+                .children(jit)
                 .child(
                     Button::new(("uninstall", index))
                         .danger()
@@ -522,6 +533,13 @@ impl Sideport {
             })
             .children(profile_rows);
 
-        div().flex().flex_col().gap_5().child(apps_card).child(profiles_card).into_any_element()
+        div()
+            .flex()
+            .flex_col()
+            .gap_5()
+            .child(self.render_device_utilities(device, locked, cx))
+            .child(apps_card)
+            .child(profiles_card)
+            .into_any_element()
     }
 }

@@ -15,6 +15,8 @@ mod common;
 
 mod account_flows;
 mod device_flows;
+mod device_utilities;
+mod editor_sources;
 mod installation_flows;
 mod ipc_requests;
 mod link_sources;

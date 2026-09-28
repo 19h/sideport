@@ -2,10 +2,10 @@
 mod common;
 
 use futures::executor::block_on;
-use sl_app::{Draft, ExportMode, IdentifierPolicy};
+use sl_app::{Draft, ExportMode, IdentifierPolicy, InjectionKind, injection_url, validate_icon};
 use sl_engine::{
     AppSummary, BundleIdPolicy, DeviceBackend, Engine, EngineConfig, ExtensionRemoval, FileReplacement, InfoValue,
-    SigningMode, Target,
+    LibraryInjection, SigningMode, Target,
 };
 use sl_testkit::FakeDevice;
 use std::path::{Path, PathBuf};
@@ -199,4 +199,55 @@ fn device_options_apply_only_where_the_engine_accepts_them() {
     draft.upload_chunk = "64".into();
     let largest = draft.spec(&app, ExportMode::AdHoc, device).expect("64 MiB chunks");
     assert_eq!(largest.options.upload_chunk_mib, Some(64));
+}
+
+#[test]
+fn custom_icons_and_injection_sources_apply_to_re_signing_modes_only() {
+    let temporary = tempfile::tempdir().expect("tempdir");
+    let root = temporary.path().join("Test.app");
+    common::synthetic_bundle(&root, "com.example.test", "Test", "APPL");
+    let app = inspect(temporary.path(), root);
+
+    let icon = temporary.path().join("Icon.png");
+    let renamed_text = temporary.path().join("Text.png");
+    image::RgbaImage::from_pixel(8, 8, image::Rgba([1, 2, 3, 255])).save(&icon).expect("icon");
+    std::fs::write(&renamed_text, b"not an image").expect("text");
+
+    let special = LibraryInjection { source: "///special/substrate".into(), name: None };
+    let mut draft = Draft::for_app(&app);
+    draft.apple_id = Some("fixture@example.test".into());
+    draft.options.icon = Some(icon.clone());
+    draft.options.injections = vec![special.clone()];
+
+    for mode in [ExportMode::AppleId, ExportMode::AdHoc, ExportMode::Unsigned] {
+        let job = draft.job(&app, mode, None).expect("re-signing job");
+
+        assert_eq!(job.options.icon.as_ref(), Some(&icon), "{mode:?}");
+        assert_eq!(job.options.injections, std::slice::from_ref(&special), "{mode:?}");
+    }
+
+    let original = draft.job(&app, ExportMode::Original, None).expect("original");
+    assert_eq!((original.options.icon, original.options.injections), (None, Vec::new()), "Original re-signs nothing");
+
+    assert!(validate_icon(&icon).is_ok());
+    assert!(validate_icon(&renamed_text).is_err(), "the PNG signature is checked, not only the name");
+    assert!(validate_icon(&temporary.path().join("Absent.png")).is_err());
+
+    draft.options.icon = Some(renamed_text);
+    assert!(draft.job(&app, ExportMode::AdHoc, None).is_err(), "an icon that is no longer a PNG stops the job");
+
+    assert_eq!(injection_url(" https://example.test/tweak.deb "), Ok(PathBuf::from("https://example.test/tweak.deb")));
+
+    for invalid in ["", "https://", "ftp://example.test/a.deb", "https://exa mple.test/a.deb", "/tmp/a.deb", "a.deb"] {
+        assert!(injection_url(invalid).is_err(), "{invalid}");
+    }
+
+    for (source, kind) in [
+        ("///special/spoofer", InjectionKind::Special),
+        ("http://example.test/Tweak.dylib", InjectionKind::Download),
+        ("/tmp/Tweak.DEB", InjectionKind::Package),
+        ("/tmp/Tweak.dylib", InjectionKind::Local),
+    ] {
+        assert_eq!(InjectionKind::of(Path::new(source)), kind, "{source}");
+    }
 }

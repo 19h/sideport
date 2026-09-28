@@ -147,7 +147,8 @@ impl Sideport {
                     .child(field("Release version", &self.fields.short_version, disabled))
                     .child(field("Build number", &self.fields.version, disabled))
                     .child(field("Minimum OS", &self.fields.minimum_os, disabled)),
-            );
+            )
+            .child(self.render_icon_choice(disabled, cx));
 
         let toggles = div()
             .flex()
@@ -206,7 +207,7 @@ impl Sideport {
             .child(self.render_destination(cx))
             .child(card().child(metadata).child(toggles))
             .when(!app.extensions.is_empty(), |this| this.child(card().child(self.render_extensions(cx, disabled))))
-            .child(card().child(self.render_injections(cx, disabled)))
+            .child(card().child(self.render_injections(disabled, cx)))
             .child(
                 card()
                     .child(
@@ -273,47 +274,6 @@ impl Sideport {
                             if names.is_empty() { ExtensionRemoval::Keep } else { ExtensionRemoval::Selected(names) };
                         cx.notify();
                     }))
-            }))
-    }
-
-    fn render_injections(&self, cx: &mut Context<Self>, disabled: bool) -> impl IntoElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(
-                div().flex().justify_between().items_center().child(section_title("Libraries & resources")).child(
-                    Button::new("add-injection")
-                        .outline()
-                        .label("Add…")
-                        .disabled(disabled)
-                        .on_click(cx.listener(|view, _, window, cx| view.add_injection(window, cx))),
-                ),
-            )
-            .when(self.draft.options.injections.is_empty(), |this| {
-                this.child(
-                    div()
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .child("Add a dylib, framework, or resource to include in the app."),
-                )
-            })
-            .children(self.draft.options.injections.iter().enumerate().map(|(index, injection)| {
-                let path = injection.source.clone();
-
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .child(div().flex_1().min_w_0().text_sm().child(path.display().to_string()))
-                    .child(
-                        Button::new(("remove-injection", index)).ghost().label("Remove").disabled(disabled).on_click(
-                            cx.listener(move |view, _, _, cx| {
-                                view.draft.options.injections.retain(|injection| injection.source != path);
-                                cx.notify();
-                            }),
-                        ),
-                    )
             }))
     }
 

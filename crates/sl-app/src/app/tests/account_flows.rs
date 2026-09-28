@@ -195,3 +195,43 @@ async fn apple_id_signing_without_an_account_explains_the_next_step(cx: &mut Tes
     click(&mut cx, "open-accounts");
     assert_eq!(cx.read(|cx| view.read(cx).section), Section::Accounts);
 }
+
+#[gpui::test]
+async fn an_account_with_several_teams_signs_with_a_default_team_or_asks_at_the_next_job(cx: &mut TestAppContext) {
+    const ORG: &str = "dev@org.example";
+
+    let temporary = tempfile::tempdir().expect("tempdir");
+    let engine = demo_engine(temporary.path());
+    let (view, mut cx) = window(engine.clone(), cx);
+
+    let default_team = |engine: &Engine| {
+        let accounts = engine.accounts().expect("accounts");
+
+        accounts.into_iter().find(|account| account.apple_id == ORG).and_then(|account| account.default_team)
+    };
+
+    sign_in(&mut cx, &view, ORG, "hunter2").await;
+    enter_code(&mut cx, &view, "123456").await;
+    assert_eq!(default_team(&engine).as_deref(), Some("A1B2C3D4E5"));
+
+    click(&mut cx, &format!("default-team:{ORG}:Z9Y8X7W6V5"));
+    assert_eq!(default_team(&engine).as_deref(), Some("Z9Y8X7W6V5"));
+    assert_eq!(cx.read(|cx| view.read(cx).error.clone()), None);
+
+    let listed = cx.read(|cx| view.read(cx).accounts.list.iter().find(|account| account.apple_id == ORG).cloned());
+    assert_eq!(listed.and_then(|account| account.default_team).as_deref(), Some("Z9Y8X7W6V5"), "the card follows");
+
+    click(&mut cx, &format!("default-team:{ORG}:ask"));
+    assert_eq!(default_team(&engine), None, "the next job asks for the team again");
+    assert!(cx.read(|cx| view.read(cx).status.contains("asks which team")));
+
+    assert!(!rendered(&mut cx, "default-team:jane@example.com:ask"), "a single team needs no choice");
+
+    // A choice the engine refuses (the account was signed out meanwhile) is reported.
+    futures::executor::block_on(engine.logout(ORG.into())).expect("sign out elsewhere");
+    click(&mut cx, &format!("default-team:{ORG}:Z9Y8X7W6V5"));
+
+    let error = cx.read(|cx| view.read(cx).error.clone()).expect("refused choice");
+    assert!(error.contains("not signed in"), "{error}");
+    assert!(rendered(&mut cx, "error"));
+}

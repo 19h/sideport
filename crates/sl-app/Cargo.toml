@@ -36,9 +36,15 @@ sl-bundle.workspace = true
 sl-macho.workspace = true
 sl-device.workspace = true
 sl-testkit.workspace = true
+sl-acquire.workspace = true
 wiremock.workspace = true
 tokio.workspace = true
 gpui = { workspace = true, features = ["test-support"] }
+# Generated `.deb` injection packages and PNG icons for editor tests.
+ar.workspace = true
+tar.workspace = true
+flate2.workspace = true
+image.workspace = true
 
 [lints]
 workspace = true

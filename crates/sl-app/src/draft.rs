@@ -3,8 +3,93 @@ use sl_engine::{
 };
 use std::{
     collections::BTreeSet,
+    io::Read,
     path::{Component, Path, PathBuf},
 };
+
+/// The recovered injection specials: the source the engine resolves when the job runs, and a label.
+#[rustfmt::skip]
+pub const SPECIAL_INJECTIONS: [(&str, &str); 3] = [
+    ("///special/substrate",  "Substrate"),
+    ("///special/substitute", "Substitute"),
+    ("///special/spoofer",    "Spoofer"),
+];
+
+const MAX_URL_BYTES: usize = 2048;
+const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
+
+/// How the engine resolves an injection source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InjectionKind {
+    /// `///special/<name>`: resolved to a current package when the job runs.
+    Special,
+    /// An `http(s)://` URL, downloaded when the job runs.
+    Download,
+    /// A local Debian package, unpacked into its dylibs, frameworks and bundles.
+    Package,
+    /// A local dylib, framework, bundle or resource, copied as is.
+    Local,
+}
+
+impl InjectionKind {
+    pub fn of(source: &Path) -> Self {
+        let text = source.to_string_lossy();
+        let deb = source.extension().and_then(|extension| extension.to_str());
+
+        if text.starts_with("///special/") {
+            Self::Special
+        } else if text.starts_with("http://") || text.starts_with("https://") {
+            Self::Download
+        } else if deb.is_some_and(|extension| extension.eq_ignore_ascii_case("deb")) {
+            Self::Package
+        } else {
+            Self::Local
+        }
+    }
+
+    pub fn label(self) -> Option<&'static str> {
+        match self {
+            Self::Special => Some("Special"),
+            Self::Download => Some("Download"),
+            Self::Package => Some("Debian package"),
+            Self::Local => None,
+        }
+    }
+}
+
+/// A typed injection URL: `http://` or `https://` with a host, without whitespace, at most 2 KiB.
+pub fn injection_url(text: &str) -> Result<PathBuf, String> {
+    let text = text.trim();
+    let invalid = || "Enter an http:// or https:// URL of a .deb, dylib or other injection.".to_string();
+
+    if text.len() > MAX_URL_BYTES || text.contains(char::is_whitespace) {
+        return Err(invalid());
+    }
+
+    let url = url::Url::parse(text).map_err(|_| invalid())?;
+    let web = matches!(url.scheme(), "http" | "https");
+
+    if !web || url.host_str().is_none_or(str::is_empty) {
+        return Err(invalid());
+    }
+
+    Ok(PathBuf::from(text))
+}
+
+/// A custom icon must be a `.png` file that starts with the PNG signature.
+pub fn validate_icon(path: &Path) -> Result<(), String> {
+    let named_png = path.extension().and_then(|extension| extension.to_str());
+    let named_png = named_png.is_some_and(|extension| extension.eq_ignore_ascii_case("png"));
+
+    let mut signature = [0; 8];
+    let readable = std::fs::File::open(path).and_then(|mut file| file.read_exact(&mut signature));
+
+    if !named_png || readable.is_err() || signature != PNG_SIGNATURE {
+        return Err(format!("{} is not a PNG image. Choose a .png file for the icon.", path.display()));
+    }
+
+    Ok(())
+}
 
 /// How the prepared app is signed. The name predates device installation; the mode applies to
 /// both export and install targets.
@@ -144,7 +229,8 @@ impl Draft {
         Ok(JobSpec { source: app.path.clone(), target, signing, options })
     }
 
-    /// The edited options for every mode except original; target options stay at defaults.
+    /// The edited options for every mode except original, which re-signs nothing and so takes
+    /// no custom icon. Target options stay at their defaults.
     fn edits(&self, app: &AppSummary, mode: ExportMode) -> Result<AppOptions, String> {
         let defaults = AppOptions::default();
         let apple_id = mode == ExportMode::AppleId;
@@ -171,6 +257,10 @@ impl Draft {
 
         for replacement in &options.replacements {
             validate_relative(&replacement.target)?;
+        }
+
+        if let Some(icon) = &options.icon {
+            validate_icon(icon)?;
         }
 
         if let ExtensionRemoval::Selected(names) = &options.remove_extensions {

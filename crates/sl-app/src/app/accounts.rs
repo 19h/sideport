@@ -1,13 +1,15 @@
-//! Apple ID accounts: sign-in, session import, certificates and App IDs.
+//! Apple ID accounts: sign-in, session import, default team, certificates and App IDs.
 
 use super::{
     Confirmation, PendingAction, Quota, Sideport,
     widgets::{badge, card, format_time, labelled, muted, page_title, section_title},
 };
 use crate::{picker, prompt::team_kind};
-use gpui::{AnyElement, AppContext, Context, Entity, FontWeight, IntoElement, Task, Window, div, prelude::*, px};
+use gpui::{
+    AnyElement, AppContext, Context, Entity, FontWeight, IntoElement, SharedString, Task, Window, div, prelude::*, px,
+};
 use gpui_component::{
-    Disableable,
+    Disableable, Selectable,
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
     input::{Input, InputEvent, InputState},
@@ -233,6 +235,31 @@ impl Sideport {
         cx.notify();
     }
 
+    /// Choose the team jobs use without asking, or `None` to be asked at the next job. The engine
+    /// keeps the team answered there as the new default, as the recovered client chooses once.
+    fn choose_default_team(&mut self, apple_id: String, team_id: Option<String>, cx: &mut Context<Self>) {
+        if self.occupied() {
+            return;
+        }
+
+        let saved = self.engine.set_default_team(&apple_id, team_id.clone());
+
+        match (saved, team_id) {
+            (Ok(()), Some(team_id)) => {
+                self.status = format!("{apple_id} signs with team {team_id} without asking");
+                self.error = None;
+            }
+            (Ok(()), None) => {
+                self.status = format!("Sideport asks which team {apple_id} signs with at the next job");
+                self.error = None;
+            }
+            (Err(error), _) => self.error = Some(format!("Could not change the default team: {error}")),
+        }
+
+        self.reload_accounts();
+        cx.notify();
+    }
+
     fn load_certificates(&mut self, apple_id: String, window: &mut Window, cx: &mut Context<Self>) {
         if self.occupied() {
             return;
@@ -439,6 +466,8 @@ impl Sideport {
             })
             .collect();
 
+        let default_team = (account.teams.len() > 1).then(|| render_default_team(account, locked, cx));
+
         let quota = self.accounts.quota.get(&apple_id).map(|quota| {
             let release = quota.next_release.map(|time| format!(" · next frees {}", format_time(time)));
 
@@ -500,6 +529,7 @@ impl Sideport {
                     })
                     .children(teams),
             )
+            .children(default_team)
             .children(quota)
             .child(actions)
             .children(certificates)
@@ -566,6 +596,44 @@ impl Sideport {
             .children(rows)
             .into_any_element()
     }
+}
+
+/// The team jobs use without asking, or "Ask at next job"; shown for accounts with several teams.
+fn render_default_team(account: &AccountSummary, locked: bool, cx: &mut Context<Sideport>) -> AnyElement {
+    let apple_id = account.apple_id.clone();
+    let scope = SharedString::from(format!("default-team:{apple_id}"));
+
+    let teams = account.teams.iter().map(|team| (Some(team.team_id.clone()), team.name.clone()));
+    let choices = teams.chain([(None, "Ask at next job".to_string())]);
+
+    let buttons = choices.enumerate().map(|(index, (team_id, label))| {
+        let selected = account.default_team == team_id;
+        let selector = format!("{scope}:{}", team_id.as_deref().unwrap_or("ask"));
+        let apple_id = apple_id.clone();
+        let choose = cx.listener(move |view, _, _, cx| view.choose_default_team(apple_id.clone(), team_id.clone(), cx));
+
+        Button::new((scope.clone(), index))
+            .outline()
+            .label(label)
+            .selected(selected)
+            .disabled(locked)
+            .debug_selector(move || selector.clone())
+            .on_click(choose)
+    });
+
+    let explanation = match &account.default_team {
+        Some(_) => "Jobs sign with this team without asking.",
+        None => "The next job asks which team to sign with and keeps the answer as the default.",
+    };
+
+    div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(section_title("Default team"))
+        .child(div().flex().flex_wrap().gap_2().children(buttons))
+        .child(muted(explanation, cx))
+        .into_any_element()
 }
 
 fn render_app_ids(app_ids: &[AppIdSummary], cx: &mut Context<Sideport>) -> AnyElement {
