@@ -187,3 +187,51 @@ fn sign_in_tokens_reach_only_a_waiting_sign_in() {
 
     assert_eq!(get(port, "/tokens?user_token=again", None).0, 500, "the waiter is consumed");
 }
+
+#[test]
+fn a_returned_feature_token_is_verified_into_feature_state() {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use rsa::pkcs8::EncodePublicKey;
+    use rsa::signature::{SignatureEncoding, Signer};
+
+    let key = sl_testkit::ProfileChain::shared().signer.key.clone();
+    let public_pem = key.to_public_key().to_public_key_pem(Default::default()).expect("public key");
+    let services = sl_services::ServiceConfig {
+        token_public_key_pem: Some(public_pem),
+        current_version: env!("CARGO_PKG_VERSION").into(),
+        ..sl_services::ServiceConfig::default()
+    };
+
+    let directory = tempfile::tempdir().expect("tempdir");
+    let config = EngineConfig {
+        data_dir: Some(directory.path().into()),
+        disable_scheduler: true,
+        file_secrets: true,
+        mac_target: MacTargetSetting::Disabled,
+        services: Some(services),
+        ..EngineConfig::default()
+    };
+    let engine = Engine::new(config).expect("engine");
+    let server = engine.serve_ipc(Some(0)).expect("serve");
+
+    let expires = Utc::now().timestamp() + 3600;
+    let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"RS256","typ":"JWT"}"#);
+    let claims =
+        URL_SAFE_NO_PAD.encode(format!(r#"{{"sub":"fixture","exp":{expires},"features":{{"custom_icon":true}}}}"#));
+    let signing_input = format!("{header}.{claims}");
+    let signature = rsa::pkcs1v15::SigningKey::<sha2::Sha256>::new(key).sign(signing_input.as_bytes()).to_vec();
+    let token = format!("{signing_input}.{}", URL_SAFE_NO_PAD.encode(signature));
+
+    let pending = engine.receive_feature_token();
+    assert_eq!(get(server.port(), &format!("/tokens?user_token={token}"), None).0, 200);
+
+    let state = futures::executor::block_on(pending).expect("verified token");
+    assert!(state.features.custom_icon && state.token_present);
+    assert_eq!(state.subject.as_deref(), Some("fixture"));
+    assert_eq!(engine.services_status().feature_state, state);
+
+    let forged = engine.receive_feature_token();
+    assert_eq!(get(server.port(), &format!("/tokens?user_token={header}.{claims}.AAAA"), None).0, 200);
+    assert!(futures::executor::block_on(forged).is_err(), "a token with a bad signature is refused");
+}

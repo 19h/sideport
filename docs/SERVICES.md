@@ -115,10 +115,13 @@ Info.plist keys and a custom AFC upload chunk size), but the names and the wire 
 The recovered GUI opens a browser login and serves a one-shot `http://localhost:28811/tokens`
 callback that reads a `user_token` query parameter while a login it started is pending, answers with
 a fixed success page, and consumes the token once. The HTTP listener is part of the engine's local
-IPC server (written separately). This crate provides `Services::apply_token(token, now)` — the
-services-side step that route calls: it validates the token with the configured verifier and records
-the resulting `FeatureState`, or errors when no verifier is configured. The engine exposes it as
-`Engine::apply_feature_token`.
+IPC server (docs/ENGINE.md, Local IPC). This crate provides `Services::apply_token(token, now)` — the
+services-side step: it validates the token with the configured verifier and records the resulting
+`FeatureState`, or errors when no verifier is configured. The engine exposes it as
+`Engine::apply_feature_token`, and `Engine::receive_feature_token` joins the two: it waits for the
+one pending `/tokens` return and verifies the delivered token. An engine test serves IPC, returns a
+minted RS256 token through `/tokens` and checks the resulting feature state, and refuses a token
+with a bad signature.
 
 ## Engine and CLI integration
 
@@ -175,8 +178,9 @@ Primary sources recovered by reverse engineering:
   names were not extracted; the schema above is Sideport's own and any real key/claims would be
   supplied by configuration.
 - S4: The `/tokens` return delivers a `user_token` to a one-shot listener. Dependent result: the
-  engine's IPC route can hand that token to `apply_token`. Probe: the IPC server's own tests own the
-  listener; this crate validates the token-to-feature-state step.
+  engine's IPC route can hand that token to `apply_token`. Probe: the engine's IPC tests deliver a
+  minted token through the real listener into feature state; this crate validates the
+  token-to-feature-state step.
 
 ## Bounded observations
 

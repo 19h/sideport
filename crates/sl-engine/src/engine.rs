@@ -412,6 +412,16 @@ impl Engine {
         })
     }
 
+    /// Wait for the browser to return a feature token to the local IPC `/tokens` route (the app
+    /// must serve IPC), then verify it into feature state. The front end opens the configured
+    /// sign-in page; a later wait replaces this one.
+    pub fn receive_feature_token(&self) -> impl Future<Output = Result<sl_services::FeatureState>> + use<> {
+        let token = self.await_sign_in_token();
+        let engine = self.clone();
+
+        async move { engine.apply_feature_token(token.await?) }
+    }
+
     /// Validate a feature token received by the local IPC `/tokens` route into feature state. The
     /// IPC server owns the HTTP listener; this is the services-side step it calls with the token.
     pub fn apply_feature_token(&self, token: String) -> Result<sl_services::FeatureState> {
