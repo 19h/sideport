@@ -55,7 +55,13 @@ bytes = "1"
 # fs / archives / perf
 zip = { version = "2", default-features = false, features = ["deflate"] }
 flate2 = "1"
+# deb/ar injection inputs: pure-Rust ar + tar readers and pure-Rust data.tar decoders; bzip2 0.6
+# defaults to the pure-Rust libbz2-rs-sys backend (also used by sl-services' bspatch).
+ar = "0.9"
+tar = "0.4"
+lzma-rs = "0.3"
 bzip2 = "0.6"
+ruzstd = "0.7"
 rayon = "1.10"
 memmap2 = "0.9"
 tempfile = "3"

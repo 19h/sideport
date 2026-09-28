@@ -1,11 +1,200 @@
-use crate::{Error, Result};
+use crate::error::io;
+use crate::files;
+use crate::{BundleArchive, Control, Error, Result, read_dictionary};
 use flate2::{Compression, read::DeflateDecoder, write::ZlibEncoder};
-use image::{ImageFormat, ImageReader, Limits};
+use image::imageops::FilterType;
+use image::{ImageFormat, ImageReader, Limits, RgbaImage};
+use plist::{Dictionary, Value};
+use std::collections::BTreeMap;
+use std::fs;
 use std::io::{Cursor, Read, Write};
+use std::path::{Path, PathBuf};
 
 const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 const MAX_DIMENSION: u32 = 4096;
 const MAX_SCANLINE_BYTES: u64 = 80 * 1024 * 1024;
+
+/// Size used when an existing icon cannot be measured, matching the recovered 0x80 default.
+const DEFAULT_ICON_SIZE: u32 = 128;
+
+/// Which icon files a custom-icon pass replaced, with the pixel size each was resized to.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct IconReport {
+    /// App-relative icon paths and their new square dimension, sorted by path.
+    pub replaced: Vec<(PathBuf, u32)>,
+}
+
+impl BundleArchive {
+    /// Replace the app's loose PNG icons with resized copies of a user PNG, reconstructed from
+    /// the Go `ipa.ReplaceAppIcon` (`decompiled/go/sideloadly_ipa.c`).
+    ///
+    /// Each declared icon file is overwritten with the user image resized to that file's own
+    /// pixel size; ancillary chunks and CgBI encoding in the user PNG are dropped. The recovered
+    /// code does not touch Info.plist (the existing `CFBundleIcons`/`CFBundleIconFiles` entries
+    /// already name these files) and refuses Assets-catalog icons; Sideport does exactly that.
+    pub fn replace_icon(&mut self, png: &[u8], control: Control<'_>) -> Result<IconReport> {
+        control.check()?;
+
+        let root = self.bundle_path();
+        let info = read_dictionary(&files::read_inside(&root, Path::new("Info.plist"))?)?;
+        let bases = icon_bases(&info)?;
+
+        let mut targets = matching_icon_files(&root, &bases)?;
+        targets.sort_unstable();
+
+        if targets.is_empty() {
+            if io(&root.join("Assets.car"), root.join("Assets.car").try_exists())? {
+                return Err(Error::Bundle("this app packs its icons in Assets.car, which cannot be replaced".into()));
+            }
+
+            return Err(Error::Bundle("no loose icon files matched the declared icon names".into()));
+        }
+
+        let source = prepare_source(png)?;
+        let mut resized: BTreeMap<u32, Vec<u8>> = BTreeMap::new();
+        let mut replaced = Vec::with_capacity(targets.len());
+
+        for relative in targets {
+            control.check()?;
+
+            let path = files::read_inside(&root, &relative)?;
+            let size = measured_size(&path);
+
+            let encoded = match resized.get(&size) {
+                Some(encoded) => encoded,
+                None => {
+                    let encoded = encode_resized(&source, size)?;
+
+                    resized.entry(size).or_insert(encoded)
+                }
+            };
+
+            files::atomic_write(&path, encoded)?;
+            replaced.push((relative, size));
+        }
+
+        Ok(IconReport { replaced })
+    }
+}
+
+/// Gather declared icon base names from Info.plist, matching the recovered `findIconBases`:
+/// `CFBundleIcons~ipad`/`CFBundleIcons` → `CFBundlePrimaryIcon` → `CFBundleIconFiles`, plus a
+/// top-level `CFBundleIconFiles`. Assets-catalog references are refused up front.
+fn icon_bases(info: &Dictionary) -> Result<Vec<String>> {
+    let mut bases = Vec::new();
+
+    for key in ["CFBundleIcons~ipad", "CFBundleIcons"] {
+        let primary = info
+            .get(key)
+            .and_then(Value::as_dictionary)
+            .and_then(|icons| icons.get("CFBundlePrimaryIcon"))
+            .and_then(Value::as_dictionary)
+            .and_then(|primary| primary.get("CFBundleIconFiles"));
+
+        collect_strings(primary, &mut bases);
+    }
+
+    collect_strings(info.get("CFBundleIconFiles"), &mut bases);
+    collect_strings(info.get("CFBundleIconFile"), &mut bases);
+
+    bases.sort_unstable();
+    bases.dedup();
+
+    if bases.is_empty() {
+        return Err(Error::Bundle("Info.plist declares no icon files".into()));
+    }
+
+    if bases.iter().any(|base| base.starts_with("Assets.car/")) {
+        return Err(Error::Bundle("this app packs its icons in Assets.car, which cannot be replaced".into()));
+    }
+
+    Ok(bases)
+}
+
+fn collect_strings(value: Option<&Value>, names: &mut Vec<String>) {
+    match value {
+        Some(Value::String(name)) if !name.is_empty() => names.push(name.clone()),
+        Some(Value::Array(values)) => {
+            for value in values {
+                collect_strings(Some(value), names);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Root-level PNGs whose name matches a declared base, optionally with an `@2x`/`~ipad` suffix.
+fn matching_icon_files(root: &Path, bases: &[String]) -> Result<Vec<PathBuf>> {
+    let mut matches = Vec::new();
+
+    for entry in io(root, fs::read_dir(root))? {
+        let entry = io(root, entry)?;
+
+        if !io(&entry.path(), entry.file_type())?.is_file() {
+            continue;
+        }
+
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some(stem) = name.strip_suffix(".png").or_else(|| name.strip_suffix(".PNG")) else {
+            continue;
+        };
+
+        let matched = bases.iter().any(|base| {
+            let base = base.strip_suffix(".png").unwrap_or(base);
+
+            stem == base || stem.strip_prefix(base).is_some_and(|suffix| suffix.starts_with(['@', '~']))
+        });
+
+        if matched {
+            matches.push(PathBuf::from(name));
+        }
+    }
+
+    Ok(matches)
+}
+
+/// Decode a user PNG into straight RGBA, stripping ancillary chunks and normalizing CgBI. The
+/// re-decoded pixels carry no `iCCP`/`gAMA` metadata into the resized output.
+fn prepare_source(png: &[u8]) -> Result<RgbaImage> {
+    let (normalized, _area) = normalize(png)?;
+
+    image::load_from_memory_with_format(&normalized, ImageFormat::Png)
+        .map_err(|error| Error::Bundle(format!("cannot load new icon: {error}")))
+        .map(|image| image.to_rgba8())
+}
+
+fn encode_resized(source: &RgbaImage, size: u32) -> Result<Vec<u8>> {
+    let resized = image::imageops::resize(source, size, size, FilterType::Lanczos3);
+    let mut output = Cursor::new(Vec::new());
+
+    resized.write_to(&mut output, ImageFormat::Png).map_err(|error| Error::Bundle(error.to_string()))?;
+
+    Ok(output.into_inner())
+}
+
+/// The square size an existing icon should keep, or the recovered default when it cannot decode.
+fn measured_size(path: &Path) -> u32 {
+    let dimensions = fs::read(path).ok().and_then(|bytes| png_dimensions(&bytes).ok());
+
+    match dimensions {
+        Some((width, height)) => width.max(height).clamp(1, MAX_DIMENSION),
+        None => DEFAULT_ICON_SIZE,
+    }
+}
+
+fn png_dimensions(bytes: &[u8]) -> Result<(u32, u32)> {
+    let (ordinary, _cgbi) = remove_cgbi(bytes)?;
+    let mut reader = ImageReader::with_format(Cursor::new(ordinary), ImageFormat::Png);
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(MAX_DIMENSION);
+    limits.max_image_height = Some(MAX_DIMENSION);
+    reader.limits(limits);
+
+    reader.into_dimensions().map_err(|error| Error::Bundle(format!("cannot measure icon: {error}")))
+}
 
 pub(crate) fn normalize(bytes: &[u8]) -> Result<(Vec<u8>, u64)> {
     let (ordinary_png, cgbi) = remove_cgbi(bytes)?;
@@ -203,5 +392,97 @@ mod tests {
         trailing.push(0);
         assert!(normalize(&trailing).is_err());
         assert!(normalize(&cgbi(MAX_DIMENSION + 1)).is_err());
+    }
+
+    fn solid_png(size: u32, color: [u8; 4]) -> Vec<u8> {
+        let image = RgbaImage::from_pixel(size, size, image::Rgba(color));
+        let mut output = Cursor::new(Vec::new());
+        image.write_to(&mut output, ImageFormat::Png).expect("png");
+
+        output.into_inner()
+    }
+
+    fn app_with(root: &Path, icons: Value, files: &[(&str, u32)]) {
+        let mut info = Dictionary::new();
+        info.insert("CFBundleIdentifier".into(), "com.example.app".into());
+        info.insert("CFBundleExecutable".into(), "App".into());
+        info.insert("CFBundlePackageType".into(), "APPL".into());
+        info.insert("CFBundleIcons".into(), icons);
+
+        fs::create_dir_all(root).expect("app dir");
+        Value::Dictionary(info).to_file_xml(root.join("Info.plist")).expect("info");
+        fs::write(root.join("App"), b"executable").expect("executable");
+
+        for (name, size) in files {
+            fs::write(root.join(name), solid_png(*size, [10, 20, 30, 255])).expect("icon");
+        }
+    }
+
+    fn primary_icon(files: &[&str]) -> Value {
+        let mut primary = Dictionary::new();
+        primary.insert("CFBundleIconFiles".into(), Value::Array(files.iter().map(|name| Value::from(*name)).collect()));
+
+        let mut icons = Dictionary::new();
+        icons.insert("CFBundlePrimaryIcon".into(), Value::Dictionary(primary));
+
+        Value::Dictionary(icons)
+    }
+
+    fn dimensions(path: &Path) -> (u32, u32) {
+        image::load_from_memory(&fs::read(path).expect("read")).expect("decode").into_rgba8().dimensions()
+    }
+
+    #[test]
+    fn replaces_declared_icons_with_resized_copies_at_their_original_sizes() {
+        let temporary = tempfile::tempdir().expect("tempdir");
+        let root = temporary.path().join("App.app");
+
+        app_with(
+            &root,
+            primary_icon(&["AppIcon60x60", "AppIcon76x76"]),
+            &[("AppIcon60x60@2x.png", 120), ("AppIcon76x76~ipad.png", 152), ("Unrelated.png", 64)],
+        );
+
+        let mut archive =
+            crate::BundleArchive::unpack(&root, crate::ArchiveLimits::default(), Control::default()).expect("unpack");
+        let report = archive.replace_icon(&solid_png(300, [200, 100, 50, 255]), Control::default()).expect("replace");
+
+        assert_eq!(
+            report.replaced,
+            vec![(PathBuf::from("AppIcon60x60@2x.png"), 120), (PathBuf::from("AppIcon76x76~ipad.png"), 152)]
+        );
+
+        let staged = archive.bundle_path();
+        assert_eq!(dimensions(&staged.join("AppIcon60x60@2x.png")), (120, 120));
+        assert_eq!(dimensions(&staged.join("AppIcon76x76~ipad.png")), (152, 152));
+        assert_eq!(dimensions(&staged.join("Unrelated.png")), (64, 64), "non-icon PNG is left alone");
+
+        let pixel = image::load_from_memory(&fs::read(staged.join("AppIcon60x60@2x.png")).expect("value"))
+            .expect("value")
+            .to_rgba8()
+            .get_pixel(60, 60)
+            .0;
+        assert_eq!(pixel, [200, 100, 50, 255], "resized from the user icon");
+    }
+
+    #[test]
+    fn refuses_assets_car_packed_icons_and_undeclared_icons() {
+        let temporary = tempfile::tempdir().expect("tempdir");
+
+        let asset_app = temporary.path().join("Asset.app");
+        app_with(&asset_app, primary_icon(&["AppIcon"]), &[]);
+        fs::write(asset_app.join("Assets.car"), b"catalog").expect("assets");
+
+        let mut archive =
+            crate::BundleArchive::unpack(&asset_app, crate::ArchiveLimits::default(), Control::default()).expect("a");
+        let error =
+            archive.replace_icon(&solid_png(120, [1, 2, 3, 255]), Control::default()).expect_err("expected error");
+        assert!(matches!(error, Error::Bundle(message) if message.contains("Assets.car")));
+
+        let bare_app = temporary.path().join("Bare.app");
+        app_with(&bare_app, Value::Dictionary(Dictionary::new()), &[]);
+        let mut bare =
+            crate::BundleArchive::unpack(&bare_app, crate::ArchiveLimits::default(), Control::default()).expect("b");
+        assert!(bare.replace_icon(&solid_png(120, [1, 2, 3, 255]), Control::default()).is_err());
     }
 }

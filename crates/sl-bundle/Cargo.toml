@@ -16,6 +16,11 @@ plist.workspace = true
 chrono.workspace = true
 zip.workspace = true
 flate2.workspace = true
+ar.workspace = true
+tar.workspace = true
+lzma-rs.workspace = true
+bzip2.workspace = true
+ruzstd.workspace = true
 rayon.workspace = true
 memmap2.workspace = true
 tempfile.workspace = true
@@ -26,6 +31,8 @@ unicode-normalization.workspace = true
 crc32fast = "1"
 
 [dev-dependencies]
+# Test-only zstd compressor for building data.tar.zst fixtures; the runtime decoder is ruzstd.
+zstd = "0.13"
 proptest.workspace = true
 rsa.workspace = true
 sha2.workspace = true

@@ -4,11 +4,13 @@
 
 mod archive;
 mod control;
+mod deb;
 mod error;
 mod files;
 mod icons;
 mod inject;
 mod inspect;
+pub mod mangle;
 mod model;
 mod pack;
 mod patch;
@@ -18,7 +20,9 @@ mod sign;
 
 pub use archive::{ArchiveKind, ArchiveLimits, BundleArchive};
 pub use control::{Control, Phase, Progress};
+pub use deb::{DebPackage, extract_deb};
 pub use error::{Error, Result};
+pub use icons::IconReport;
 pub use inject::{Injection, InjectionReport};
 pub use inspect::{BundleInspection, ExtensionMetadata, inspect};
 pub use model::{Bundle, BundleKind};
