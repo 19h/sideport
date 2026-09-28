@@ -119,9 +119,10 @@ threshold 1–720 h, interval 1–1440 min, Wi-Fi allowed) and the remember-pass
 stream-upload defaults. These are validated and applied together by "Save settings" to the
 settings as currently stored, so a change another process saved meanwhile (CLI, daemon) is kept;
 the saved appearance is preserved. "Keep refreshing after this window closes" installs or removes
-the login item at once; it runs the `sideport daemon` tool packaged beside the app, and is
-disabled without that tool and in the demo. Choosing this Mac's provider explains that it is tried first and that
-the alternate server is used when macOS refuses it (docs/APPLE.md, local anisette).
+the login item at once; it runs the menu-bar daemon `sideport-tray` packaged beside the app, or
+the `sideport daemon` tool when the tray is absent, and is disabled without either and in the
+demo. Choosing this Mac's provider explains that it is tried first and that the alternate server
+is used when macOS refuses it (docs/APPLE.md, local anisette).
 
 The "Updates and services" card shows `Engine::services_status()`: whether update endpoints and a
 feature-token verifier are configured ("not configured" for both by default, with a note that

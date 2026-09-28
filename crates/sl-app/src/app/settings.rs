@@ -420,13 +420,15 @@ fn checkbox(
     ))
 }
 
-/// The command-line tool that runs the scheduler at login: `sideport` beside this executable
-/// (`Contents/MacOS` in the packaged app).
+/// The program the login item runs, beside this executable (`Contents/MacOS` in the packaged
+/// app): the menu-bar daemon `sideport-tray` when present, else the `sideport` tool. Both accept
+/// the login item's `daemon` argument.
 pub(super) fn daemon_program() -> Option<std::path::PathBuf> {
     let executable = std::env::current_exe().ok()?;
-    let program = executable.with_file_name(if cfg!(windows) { "sideport.exe" } else { "sideport" });
+    let names: [&str; 2] =
+        if cfg!(windows) { ["sideport-tray.exe", "sideport.exe"] } else { ["sideport-tray", "sideport"] };
 
-    program.is_file().then_some(program)
+    names.into_iter().map(|name| executable.with_file_name(name)).find(|program| program.is_file())
 }
 
 #[cfg(test)]
