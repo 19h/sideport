@@ -110,6 +110,12 @@ features mirror the option groups the recovered client gated (a custom auto-refr
 private/remote anisette provider, alternate entitlements, a replacement icon, ten-plus custom
 Info.plist keys and a custom AFC upload chunk size), but the names and the wire shape are ours.
 
+Decision: Sideport does not gate any option on feature state. The recovered client withheld these
+options from users without a paid token; Sideport is a local tool whose options act only on the
+user's own files, devices and accounts, so every option stays available and `FeatureState` is
+reported (`services status`, the desktop's Settings) but not enforced. An embedder that wants the
+recovered gating can check `Engine::services_status().feature_state` before offering an option.
+
 ## OAuth return contract
 
 The recovered GUI opens a browser login and serves a one-shot `http://localhost:28811/tokens`
