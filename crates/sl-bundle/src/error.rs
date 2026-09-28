@@ -32,7 +32,7 @@ pub enum Error {
     Plist(#[from] plist::Error),
 
     #[error(transparent)]
-    Codesign(#[from] sl_codesign::Error),
+    Codesign(sl_codesign::Error),
 
     /// A profile that identity signing would embed does not satisfy the target.
     #[error("{bundle}: {source}")]
@@ -61,6 +61,15 @@ pub(crate) fn from_io(path: &std::path::Path, source: std::io::Error) -> Error {
         Error::Cancelled
     } else {
         Error::Io { path: path.to_owned(), source }
+    }
+}
+
+impl From<sl_codesign::Error> for Error {
+    fn from(error: sl_codesign::Error) -> Self {
+        match error {
+            sl_codesign::Error::Cancelled => Error::Cancelled,
+            error => Error::Codesign(error),
+        }
     }
 }
 

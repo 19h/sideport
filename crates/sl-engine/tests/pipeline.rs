@@ -557,3 +557,38 @@ fn a_special_substrate_injection_is_resolved_against_the_configured_host() {
     let archive = BundleArchive::unpack(&output, ArchiveLimits::default(), Control::default()).expect("output");
     assert!(archive.bundle_path().join("Frameworks/Tweak.dylib").is_file(), "the resolved deb's dylib is injected");
 }
+
+#[test]
+fn cancelling_while_resources_are_sealed_stops_the_job_promptly() {
+    let temporary = tempfile::tempdir().expect("tempdir");
+    let root = temporary.path().join("Test.app");
+    common::synthetic_bundle(&root, "com.example.test", "Test", "APPL");
+    fs::write(root.join("large.bin"), vec![0x5a; 64 * 1024 * 1024]).expect("large resource");
+
+    let output = temporary.path().join("output.ipa");
+    let engine = engine(temporary.path());
+    let handle = engine.start(spec(root, Some(output.clone()), SigningMode::AdHoc));
+    let events = handle.events();
+    let cancellation = handle.cancellation_token();
+
+    let requested = block_on(async {
+        while let Ok(event) = events.recv().await {
+            if matches!(event, JobEvent::Stage(Stage::Signing)) {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                cancellation.cancel();
+
+                return Some(std::time::Instant::now());
+            }
+        }
+
+        None
+    })
+    .expect("signing stage");
+
+    let result = block_on(handle.result());
+    let latency = requested.elapsed();
+
+    assert!(matches!(result, Err(EngineError::Cancelled)), "{result:?}");
+    assert!(latency < std::time::Duration::from_secs(1), "cancellation took {latency:?}");
+    assert!(!output.exists());
+}

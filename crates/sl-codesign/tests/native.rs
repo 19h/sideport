@@ -12,6 +12,7 @@ fn options() -> SignOptions<'static> {
         entitlements: None,
         info_plist: None,
         code_resources: None,
+        is_cancelled: None,
     }
 }
 

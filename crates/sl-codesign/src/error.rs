@@ -27,6 +27,9 @@ pub enum Error {
         #[source]
         source: std::io::Error,
     },
+    /// The caller's cancellation callback returned true.
+    #[error("cancelled")]
+    Cancelled,
     #[error("{0}")]
     Other(String),
 }

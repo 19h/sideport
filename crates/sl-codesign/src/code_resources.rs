@@ -44,6 +44,16 @@ struct Rule {
 /// the iOS rule template. main_executable (relative path) is excluded from the seal. An existing
 /// top-level _CodeSignature directory is ignored. Hashing runs in parallel.
 pub fn build_seal(bundle_dir: &Path, main_executable: Option<&str>) -> Result<Vec<u8>> {
+    build_seal_cancellable(bundle_dir, main_executable, &|| false)
+}
+
+/// [`build_seal`], polling `is_cancelled` before each resource and after every 128 KiB read;
+/// `true` stops with [`Error::Cancelled`].
+pub fn build_seal_cancellable(
+    bundle_dir: &Path,
+    main_executable: Option<&str>,
+    is_cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<Vec<u8>> {
     if !std::fs::symlink_metadata(bundle_dir).map_err(|error| io_error(bundle_dir, error))?.is_dir() {
         return Err(Error::Other("resource root must be a real directory".into()));
     }
@@ -64,7 +74,7 @@ pub fn build_seal(bundle_dir: &Path, main_executable: Option<&str>) -> Result<Ve
     let resources = collect_resources(bundle_dir, main_executable)?;
     let entries = resources
         .par_iter()
-        .map(|resource| seal_resource(resource, &legacy_rules, &modern_rules))
+        .map(|resource| seal_resource(resource, &legacy_rules, &modern_rules, is_cancelled))
         .collect::<Result<Vec<_>>>()?;
 
     let mut files = Dictionary::new();
@@ -128,7 +138,16 @@ fn collect_resources(bundle_dir: &Path, main_executable: Option<&str>) -> Result
     Ok(resources)
 }
 
-fn seal_resource(resource: &Resource, legacy_rules: &[Rule], modern_rules: &[Rule]) -> Result<SealedResource> {
+fn seal_resource(
+    resource: &Resource,
+    legacy_rules: &[Rule],
+    modern_rules: &[Rule],
+    is_cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<SealedResource> {
+    if is_cancelled() {
+        return Err(Error::Cancelled);
+    }
+
     let legacy_rule = matching(legacy_rules, &resource.relative_path);
     let modern_rule = matching(modern_rules, &resource.relative_path);
 
@@ -151,7 +170,7 @@ fn seal_resource(resource: &Resource, legacy_rules: &[Rule], modern_rules: &[Rul
         return Ok(entry);
     }
 
-    let digests = hash_file(&resource.path)?;
+    let digests = hash_file(&resource.path, is_cancelled)?;
 
     entry.legacy = include_legacy.then(|| legacy_entry(digests.sha1.clone(), optional_legacy));
     entry.modern = include_modern.then(|| modern_entry(digests, optional_modern));
@@ -241,7 +260,7 @@ fn matching<'a>(rules: &'a [Rule], path: &str) -> Option<&'a Rule> {
     best
 }
 
-fn hash_file(path: &Path) -> Result<ResourceDigests> {
+fn hash_file(path: &Path, is_cancelled: &(dyn Fn() -> bool + Sync)) -> Result<ResourceDigests> {
     let mut file = std::fs::File::open(path).map_err(|error| io_error(path, error))?;
     let mut sha1 = Sha1::new();
     let mut sha256 = Sha256::new();
@@ -250,6 +269,10 @@ fn hash_file(path: &Path) -> Result<ResourceDigests> {
     let mut buffer = vec![0; 128 * 1024];
 
     loop {
+        if is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+
         let size = file.read(&mut buffer).map_err(|error| io_error(path, error))?;
 
         if size == 0 {
@@ -339,5 +362,48 @@ mod tests {
         let link = dict["files2"].as_dictionary().expect("files2")["link"].as_dictionary().expect("link");
 
         assert_eq!(link["symlink"].as_string(), Some("missing"));
+    }
+
+    #[test]
+    fn cancellation_stops_sealing_within_one_read_and_before_each_resource() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::{Duration, Instant};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let large = vec![0x5a; 64 * 1024 * 1024];
+        std::fs::write(tmp.path().join("large.bin"), &large).expect("large resource");
+
+        for index in 0..32 {
+            std::fs::write(tmp.path().join(format!("small-{index}")), b"small").expect("small resource");
+        }
+
+        // Deterministic: the callback answers true from its third poll on.
+        let polls = AtomicUsize::new(0);
+        let cancelled = || polls.fetch_add(1, Ordering::SeqCst) >= 2;
+        assert!(matches!(build_seal_cancellable(tmp.path(), None, &cancelled), Err(Error::Cancelled)));
+
+        let polled = polls.load(Ordering::SeqCst);
+        assert!(polled < 64, "sealing stopped early after {polled} polls (512 reads and 33 resources otherwise)");
+
+        // Latency: cancel while the 64 MiB resource is being hashed.
+        let flag = std::sync::atomic::AtomicBool::new(false);
+        let started = Instant::now();
+
+        let (result, requested) = std::thread::scope(|scope| {
+            let sealing = scope.spawn(|| build_seal_cancellable(tmp.path(), None, &|| flag.load(Ordering::SeqCst)));
+
+            std::thread::sleep(Duration::from_millis(20));
+            let requested = Instant::now();
+            flag.store(true, Ordering::SeqCst);
+
+            (sealing.join().expect("sealing thread"), requested)
+        });
+
+        let latency = requested.elapsed();
+        assert!(matches!(result, Err(Error::Cancelled)), "{:?}", result.map(|seal| seal.len()));
+        assert!(latency < Duration::from_millis(250), "cancellation took {latency:?}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+
+        assert!(build_seal_cancellable(tmp.path(), None, &|| false).is_ok(), "an unset flag seals normally");
     }
 }

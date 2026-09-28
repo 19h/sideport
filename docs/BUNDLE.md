@@ -174,8 +174,10 @@ Medium impact: `.deb`/`ar` injection inputs, remote and special (`substrate`/`su
 `spoofer`) source resolution, custom loose-PNG icon replacement and the portable filename-mangling
 utility are implemented with fixtures; remaining evidence is real tweak packages, live special
 hosts and native execution of injected/rebuilt binaries on a device. `Assets.car` icon rewriting
-is intentionally not done (refused, as recovered). Forward ZIP streaming still needs
-cancellation/backpressure/resume integration with AFC.
+is intentionally not done (refused, as recovered). Forward ZIP streaming feeds the AFC upload
+with backpressure and resumable offsets (docs/DEVICE.md). Signing polls the caller's
+cancellation per sealed resource, per 128 KiB of resource data and per Mach-O page; the measured
+engine latency is in docs/ENGINE.md (A3).
 
 Low impact: output file replacement uses one atomic temporary-file commit rather than the
 original intermediate .bak rotation; failure tests verify that old output survives.

@@ -11,6 +11,7 @@ fn options() -> SignOptions<'static> {
         entitlements: None,
         info_plist: None,
         code_resources: None,
+        is_cancelled: None,
     }
 }
 
@@ -142,4 +143,22 @@ proptest! {
         let _ = sl_codesign::ProvisioningProfile::parse(&data);
         let _ = blob::parse_superblob(&data, blob::EMBEDDED_SIGNATURE);
     }
+}
+
+#[test]
+fn cancellation_stops_page_hashing_and_signing() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let input = image(8 * 1024 * 1024, Endian::Little, true);
+
+    let never = || false;
+    let unset = SignOptions { is_cancelled: Some(&never), ..options() };
+    assert!(sign_macho(&input, &Signer::AdHoc, &unset).is_ok());
+
+    let polls = AtomicUsize::new(0);
+    let after_some_pages = || polls.fetch_add(1, Ordering::SeqCst) >= 16;
+    let cancelled = SignOptions { is_cancelled: Some(&after_some_pages), ..options() };
+
+    assert!(matches!(sign_macho(&input, &Signer::AdHoc, &cancelled), Err(sl_codesign::Error::Cancelled)));
+    assert!(polls.load(Ordering::SeqCst) < 2048, "stopped before hashing all 2048 pages");
 }

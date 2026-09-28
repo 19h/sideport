@@ -192,8 +192,12 @@ prompt cancellation, subscriber closure, and concurrent progress reduction.
 - A3: Cancellation reaches a checkpoint before output commit. Dependent results: cancelled jobs
   preserve an existing destination. Probes: engine and CLI cancellation during packing and prompt
   cancellation. Once the atomic commit succeeds, the job returns success; an interrupt racing after
-  that commit does not roll the output back. Resource sealing and single signing calls still need
-  finer-grained cancellation checkpoints and latency measurements.
+  that commit does not roll the output back. Resource sealing polls the job's cancellation before
+  each resource and after every 128 KiB read, and Mach-O signing polls it per 4 KiB page and
+  before the CMS signature (`build_seal_cancellable`, `SignOptions::is_cancelled`). Cancelling an
+  ad-hoc export while it sealed a 64 MiB resource returned `Cancelled` 1.4–4.4 ms after the
+  request in five debug-build runs on this Mac (2026-09-28); the engine test bounds it at 1 s. A
+  single Mach-O rewrite or ZIP entry already being written still completes before the check.
 - A6: SQLite WAL locking serializes processes sharing a data directory. Dependent results:
   one machine UUID and signing key per data directory, consistent installation rows. Probe:
   two-connection metadata agreement and exclusive key creation; multi-process crash tests remain.
@@ -213,7 +217,7 @@ Store/private-service clients, and the remaining full-scope workflows are not co
 ledger retains those requirements. A native ad-hoc fixture does not establish device installability.
 
 Medium impact: asset-catalog icons, icon editing, filename portability, local identity loading in the
-engine and cancellation latency need further work.
+engine needs further work.
 Header-only inspection deliberately leaves unvisited payload CRCs unchecked until preparation.
 It also allows large inputs to be reviewed before paying the full extraction/signing cost.
 

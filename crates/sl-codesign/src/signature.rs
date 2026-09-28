@@ -188,15 +188,27 @@ fn sign_slice(image: &MachO<'_>, signer: &Signer, opts: &SignOptions<'_>) -> Res
 
     let mut output = image.prepare_signature(offset, reserved)?;
 
-    let hashes: Vec<_> = output[..offset]
+    let cancelled = || opts.is_cancelled.is_some_and(|cancelled| cancelled());
+
+    let hashes = output[..offset]
         .par_chunks(PAGE_SIZE)
-        .map(|page| PageHash { sha1: Sha1::digest(page).into(), sha256: Sha256::digest(page).into() })
-        .collect();
+        .map(|page| {
+            if cancelled() {
+                return Err(Error::Cancelled);
+            }
+
+            Ok(PageHash { sha1: Sha1::digest(page).into(), sha256: Sha256::digest(page).into() })
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     let primary = directory(image, signer, opts, offset, &components, Some(&hashes), HashAlgorithm::Sha1)?;
     let alternate = directory(image, signer, opts, offset, &components, Some(&hashes), HashAlgorithm::Sha256)?;
 
     let mut blobs = components.blobs;
+
+    if cancelled() {
+        return Err(Error::Cancelled);
+    }
 
     if let Signer::Identity(identity) = signer {
         let signed_cms = cms::sign(&primary, &alternate, identity)?;

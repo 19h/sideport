@@ -71,7 +71,7 @@ pub enum CodeKind {
 }
 
 /// Per-binary signing parameters. CONTRACT.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct SignOptions<'a> {
     /// CodeDirectory identifier, normally the owning bundle's `CFBundleIdentifier`
     /// (for loose dylibs: the file name without extension).
@@ -83,6 +83,23 @@ pub struct SignOptions<'a> {
     pub info_plist: Option<&'a [u8]>,
     /// Raw bytes of the owning bundle's `_CodeSignature/CodeResources` (special slot -3).
     pub code_resources: Option<&'a [u8]>,
+    /// Polled while pages are hashed and before the CMS signature; `true` stops with
+    /// [`Error::Cancelled`].
+    pub is_cancelled: Option<&'a (dyn Fn() -> bool + Sync)>,
+}
+
+impl std::fmt::Debug for SignOptions<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SignOptions")
+            .field("identifier", &self.identifier)
+            .field("kind", &self.kind)
+            .field("entitlements", &self.entitlements)
+            .field("info_plist", &self.info_plist.map(<[u8]>::len))
+            .field("code_resources", &self.code_resources.map(<[u8]>::len))
+            .field("cancellation", &self.is_cancelled.is_some())
+            .finish()
+    }
 }
 
 /// Sign a thin or fat Mach-O image, returning the complete new file. CONTRACT.

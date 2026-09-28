@@ -141,7 +141,9 @@ fn sign_bundle(
     if let Some(signer) = request.signer {
         let relative = executable.strip_prefix(bundle.root()).map_err(|error| Error::Path(error.to_string()))?;
         let relative = files::archive_name(relative)?;
-        let resources = sl_codesign::code_resources::build_seal(bundle.root(), Some(&relative))?;
+        let cancelled = || control.is_cancelled.is_some_and(|cancelled| cancelled());
+        let resources =
+            sl_codesign::code_resources::build_seal_cancellable(bundle.root(), Some(&relative), &cancelled)?;
         let signature_dir = files::write_inside(bundle.root(), Path::new("_CodeSignature"))?;
 
         if !io(&signature_dir, signature_dir.try_exists())? {
@@ -163,6 +165,7 @@ fn sign_bundle(
             entitlements: entitlements.as_ref(),
             info_plist: Some(&info),
             code_resources: Some(&resources),
+            is_cancelled: control.is_cancelled,
         };
 
         control.check()?;
@@ -322,6 +325,7 @@ fn sign_loose(
                     entitlements: None,
                     info_plist: None,
                     code_resources: None,
+                    is_cancelled: control.is_cancelled,
                 };
 
                 sl_codesign::sign_macho(&bytes, signer, &options)
