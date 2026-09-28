@@ -59,6 +59,8 @@ pub struct EngineConfig {
     pub mac_target: MacTargetSetting,
     /// Login-item directory for autostart (default: the platform's LaunchAgents/autostart).
     pub autostart_dir: Option<PathBuf>,
+    /// Private-service endpoints and feature-token key (default: none; nothing is contacted).
+    pub services: Option<sl_services::ServiceConfig>,
 }
 
 /// Refresh notifications kept for a receiver that is not reading.
@@ -88,6 +90,8 @@ struct Inner {
     mac_setting: MacTargetSetting,
     autostart_dir: Option<PathBuf>,
     mac: std::sync::OnceLock<Option<MacTarget>>,
+    /// Private-service client (updates, feature tokens); `None` when nothing is configured.
+    services: Option<sl_services::Services>,
     /// Serializes signing-key creation within this process; the store serializes processes.
     key_lock: Mutex<()>,
     accounts: Mutex<BTreeMap<String, LiveAccount>>,
@@ -249,6 +253,13 @@ impl Engine {
         sl_apple::portal::PortalClient::with_origin(&portal_origin)
             .map_err(|error| EngineError::Auth(error.to_string()))?;
 
+        let services = match config.services {
+            Some(config) => {
+                Some(sl_services::Services::new(config).map_err(|error| EngineError::Other(error.to_string()))?)
+            }
+            None => None,
+        };
+
         let subscribers = Arc::new(Subscribers::default());
         let scheduler = !config.disable_scheduler && !config.demo;
 
@@ -268,6 +279,7 @@ impl Engine {
                     (setting, _) => setting.clone(),
                 },
                 mac: std::sync::OnceLock::new(),
+                services,
                 autostart_dir: config.autostart_dir.or_else(crate::autostart::default_directory),
                 devices: devices::Devices::new(config.device_backend),
                 machine: config
@@ -367,6 +379,49 @@ impl Engine {
 
             anisette::describe(provider.as_ref(), "").await
         })
+    }
+
+    // --------------------------------------------------------------------------------------------
+    // Private services (updates and feature tokens)
+
+    /// What private services are configured and which features are currently unlocked. With no
+    /// [`EngineConfig::services`] set, everything reports unconfigured and no features are granted.
+    pub fn services_status(&self) -> sl_services::ServicesStatus {
+        match &self.inner.services {
+            Some(services) => services.status(),
+            None => sl_services::ServicesStatus {
+                updates_configured: false,
+                token_verifier_configured: false,
+                feature_state: sl_services::FeatureState::default(),
+            },
+        }
+    }
+
+    /// Check for an application update. Returns [`sl_services::UpdateStatus::NotConfigured`] when no
+    /// update endpoints are configured; nothing is contacted in that case.
+    pub fn check_update(&self) -> impl Future<Output = Result<sl_services::UpdateStatus>> + use<> {
+        let inner = self.inner.clone();
+
+        self.run(async move {
+            match &inner.services {
+                Some(services) => {
+                    services.check_update().await.map_err(|error| EngineError::Network(error.to_string()))
+                }
+                None => Ok(sl_services::UpdateStatus::NotConfigured),
+            }
+        })
+    }
+
+    /// Validate a feature token received by the local IPC `/tokens` route into feature state. The
+    /// IPC server owns the HTTP listener; this is the services-side step it calls with the token.
+    pub fn apply_feature_token(&self, token: String) -> Result<sl_services::FeatureState> {
+        let services = self
+            .inner
+            .services
+            .as_ref()
+            .ok_or_else(|| EngineError::Unsupported("private services are not configured".into()))?;
+
+        services.apply_token(&token, chrono::Utc::now()).map_err(|error| EngineError::Other(error.to_string()))
     }
 
     // --------------------------------------------------------------------------------------------

@@ -20,4 +20,5 @@ pub use engine::{
 };
 pub use error::{EngineError, Result};
 pub use job::{Fact, JobContext, JobEvent, JobHandle, LogLevel, Prompt, PromptKind, PromptReply, Stage, TeamChoice};
+pub use sl_services::{FeatureState, Features, ServiceConfig, ServicesStatus, UpdateEndpoints, UpdateStatus};
 pub use types::*;

@@ -30,6 +30,7 @@ sl-engine = { path = "crates/sl-engine" }
 sl-testkit = { path = "crates/sl-testkit" }
 sl-macos = { path = "crates/sl-macos" }
 sl-acquire = { path = "crates/sl-acquire" }
+sl-services = { path = "crates/sl-services" }
 
 # errors / logging
 thiserror = "2"
@@ -54,6 +55,7 @@ bytes = "1"
 # fs / archives / perf
 zip = { version = "2", default-features = false, features = ["deflate"] }
 flate2 = "1"
+bzip2 = "0.6"
 rayon = "1.10"
 memmap2 = "0.9"
 tempfile = "3"

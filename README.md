@@ -67,7 +67,13 @@ sideport installations
 sideport installation refresh|forget|auto-refresh ID ...
 sideport refresh-due               # one scheduler pass (LaunchAgent/cron)
 sideport daemon                    # keep the refresh scheduler running
+sideport services status           # private-service/feature state (nothing configured by default)
+sideport services check-update     # version check against a configured endpoint, if any
 ```
+
+Private-service clients (a BSDIFF40 patcher, the update protocol and a feature-token verifier) live
+in `sl-services`. They ship no endpoints or keys and contact nothing unless an embedder supplies a
+configuration; see [docs/SERVICES.md](docs/SERVICES.md).
 
 Prompts (password, verification code or `sms`, team choice, confirmations, device
 reconnection) are asked on the terminal. Without a terminal they are declined, so unattended

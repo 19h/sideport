@@ -3,12 +3,12 @@
 use crate::jobs::{self, Answers};
 use crate::{
     AccountCommand, Cli, Command, DeviceCommand, ExportArgs, ExportMode, Fixtures, InstallArgs, InstallMode,
-    InstallationCommand, IpcCommand, SettingsCommand,
+    InstallationCommand, IpcCommand, ServicesCommand, SettingsCommand,
 };
 use anyhow::{Context, Result, bail};
 use futures::executor::block_on;
 use serde::Serialize;
-use sl_engine::{AnisetteSetting, Engine, EngineConfig, JobOutcome, JobSpec, SigningMode, Target};
+use sl_engine::{AnisetteSetting, Engine, EngineConfig, JobOutcome, JobSpec, SigningMode, Target, UpdateStatus};
 use std::fs::File;
 use std::io::{BufRead, Read};
 
@@ -58,6 +58,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
         }
         Command::Daemon => daemon(engine),
         Command::Ipc { port, command } => ipc(&engine, port, command, json),
+        Command::Services(command) => services(&engine, command, json),
     }
 }
 
@@ -217,6 +218,61 @@ fn anisette(engine: &Engine, remote: Option<String>, json: bool) -> Result<()> {
     let description = block_on(engine.test_anisette(setting))?;
 
     print(&serde_json::json!({ "description": description }), json, |_| println!("{description}"))
+}
+
+fn services(engine: &Engine, command: ServicesCommand, json: bool) -> Result<()> {
+    match command {
+        ServicesCommand::Status => {
+            let status = engine.services_status();
+            let features = &status.feature_state;
+
+            let value = serde_json::json!({
+                "updates_configured": status.updates_configured,
+                "token_verifier_configured": status.token_verifier_configured,
+                "token_present": features.token_present,
+                "subject": features.subject,
+                "expires": features.expires,
+                "features": {
+                    "refresh_interval_hours": features.features.refresh_interval_hours,
+                    "remote_anisette": features.features.remote_anisette,
+                    "custom_entitlements": features.features.custom_entitlements,
+                    "custom_icon": features.features.custom_icon,
+                    "custom_info_props": features.features.custom_info_props,
+                    "custom_upload_chunk": features.features.custom_upload_chunk,
+                },
+            });
+
+            print(&value, json, |_| {
+                println!("Updates:        {}", configured(status.updates_configured));
+                println!("Feature tokens: {}", configured(status.token_verifier_configured));
+                println!("Token present:  {}", features.token_present);
+            })
+        }
+
+        ServicesCommand::CheckUpdate => {
+            let status = block_on(engine.check_update())?;
+
+            let value = match &status {
+                UpdateStatus::NotConfigured => serde_json::json!({ "status": "not-configured" }),
+                UpdateStatus::UpToDate { version } => serde_json::json!({ "status": "up-to-date", "version": version }),
+                UpdateStatus::Available { manifest } => serde_json::json!({
+                    "status": "available",
+                    "version": manifest.version,
+                    "sha256": manifest.sha256.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+                }),
+            };
+
+            print(&value, json, |_| match &status {
+                UpdateStatus::NotConfigured => println!("Updates are not configured."),
+                UpdateStatus::UpToDate { version } => println!("Up to date (version {version})."),
+                UpdateStatus::Available { manifest } => println!("Update available: version {}.", manifest.version),
+            })
+        }
+    }
+}
+
+fn configured(value: bool) -> &'static str {
+    if value { "configured" } else { "not configured" }
 }
 
 fn settings(engine: &Engine, command: SettingsCommand, json: bool) -> Result<()> {

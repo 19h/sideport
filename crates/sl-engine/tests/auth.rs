@@ -30,10 +30,12 @@ async fn engine_password_prompt_reaches_remote_authentication_without_retaining_
         "X-Apple-Locale": "en_US",
     });
 
+    // The recovered cache refetches in the last 3 s of each 30 s window, so a second fetch can
+    // occur when the sign-in straddles that boundary.
     Mock::given(method("GET"))
         .and(path("/anisette"))
         .respond_with(ResponseTemplate::new(200).set_body_json(anisette))
-        .expect(1)
+        .expect(1..=2)
         .mount(&server)
         .await;
     Mock::given(method("POST"))

@@ -101,6 +101,9 @@ enum Command {
         #[command(subcommand)]
         command: IpcCommand,
     },
+    /// Private-service status and update check (nothing is configured by default).
+    #[command(subcommand)]
+    Services(ServicesCommand),
 }
 
 #[derive(Debug, Subcommand)]
@@ -116,6 +119,14 @@ enum IpcCommand {
     Poll,
     /// Ask the app to exit.
     Restart { message: Option<String> },
+}
+
+#[derive(Debug, Subcommand)]
+enum ServicesCommand {
+    /// Show what is configured and which features a valid token has unlocked.
+    Status,
+    /// Check the configured update endpoint. Reports "not configured" when none is set.
+    CheckUpdate,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
