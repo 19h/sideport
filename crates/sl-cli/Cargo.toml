@@ -13,7 +13,10 @@ path = "src/main.rs"
 
 [dependencies]
 sl-engine.workspace = true
+sl-codesign.workspace = true
 anyhow.workspace = true
+serde.workspace = true
+tokio-util.workspace = true
 clap.workspace = true
 indicatif.workspace = true
 dialoguer.workspace = true
@@ -32,6 +35,8 @@ plist.workspace = true
 sl-macho.workspace = true
 tokio.workspace = true
 wiremock.workspace = true
+sl-testkit.workspace = true
+der.workspace = true
 
 [lints]
 workspace = true

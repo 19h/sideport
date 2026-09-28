@@ -47,19 +47,33 @@ the compatible `gpui-component` 0.5.1 controls. See [docs/UI.md](docs/UI.md) for
 ## Commands
 
 ```sh
-cargo run -p sl-cli -- inspect MyApp.ipa --json
-cargo run -p sl-cli -- export MyApp.ipa --output Prepared.ipa --signing ad-hoc \
+sideport inspect MyApp.ipa --json
+sideport export MyApp.ipa --output Prepared.ipa --signing ad-hoc \
     --bundle-id com.example.prepared --name "Prepared App" --file-sharing
-cargo run -p sl-cli -- export MyApp.ipa --output Unsigned.ipa --signing unsigned \
+sideport export MyApp.ipa --output Unsigned.ipa --signing unsigned \
     --remove-extension Widget.appex --inject ./libExample.dylib
-cargo run -p sl-cli -- export MyApp.ipa --output Original.ipa --signing original
-cargo run -p sl-cli -- export --help
-cargo run -p sl-cli -- anisette --remote http://127.0.0.1:6969 --json
+
+sideport settings anisette --remote https://anisette.example
+sideport account login jane@example.com --remember
+sideport account import            # Sideloadly's sessions.json
+sideport devices
+sideport install MyApp.ipa --device 00008030-001A2D0C0E38802E --apple-id jane@example.com --track
+sideport export MyApp.ipa --signing apple-id --apple-id jane@example.com --output Signed.ipa
+
+sideport certificates jane@example.com [--revoke SERIAL]
+sideport app-ids jane@example.com
+sideport device apps|profiles|pair|uninstall|remove-profile UDID ...
+sideport installations
+sideport installation refresh|forget|auto-refresh ID ...
+sideport refresh-due               # one scheduler pass (LaunchAgent/cron)
+sideport daemon                    # keep the refresh scheduler running
 ```
 
-Pass `--output` for unattended jobs. Interactive exports use a save-path prompt.
-Ctrl-C cancels the worker and waits for it to release its output transaction. A cancellation
-that reaches a checkpoint before commit leaves an existing destination unchanged.
+Prompts (password, verification code or `sms`, team choice, confirmations, device
+reconnection) are asked on the terminal. Without a terminal they are declined, so unattended
+runs fail instead of waiting. Ctrl-C cancels the worker and waits for it to release its output
+transaction. `--password-stdin` reads a password for `account login`. `--json` prints results to
+stdout; diagnostics go to stderr.
 
 `--set`, `--set-bool`, `--set-integer`, and `--remove-key` provide typed Info.plist edits.
 `--replace TARGET=SOURCE` copies a file/directory into the prepared app;
@@ -68,7 +82,7 @@ that reaches a checkpoint before commit leaves an existing destination unchanged
 
 Inspection JSON omits decoded icon bytes. Inspection does not verify unvisited archive
 payloads. Ad-hoc signing does not provision an app for stock-device installation.
-Custom icon and entitlement edits currently return an explicit unsupported error.
+Custom icons currently return an explicit unsupported error.
 
 ## Verification
 

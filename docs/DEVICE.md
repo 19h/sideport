@@ -100,8 +100,13 @@ uninstall, pairing and a detached-device error. Store tests cover schema migrati
 On 2026-09-28 an ignored read-only probe (`cargo test -p sl-device --test probe -- --ignored`)
 listed one USB device through the system usbmuxd, opened a paired lockdown session and read
 `ProductType iPhone17,2`, `ProductVersion 27.2`, device class and name, and opened AFC and
-installation-proxy sessions and found `PublicStaging`. It wrote nothing. No application was
-installed on a physical device.
+installation-proxy sessions and found `PublicStaging`. The same day, `sideport devices`,
+`device apps` and `device profiles` read the device through the real engine: 146 user apps and
+two installed profiles (counts only recorded). A signer histogram showed App Store apps signed by
+`Apple iPhone OS Application Signing` without `ProfileValidated`, and development apps with a
+developer signer and `ProfileValidated = true`; `is_developer_app` therefore means "not signed by
+the App Store signer" (2 of 146). These probes wrote nothing. No application was installed on a
+physical device.
 
 ## Assumptions
 

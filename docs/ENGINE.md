@@ -76,7 +76,13 @@ These are algorithmic bounds; measured throughput, peak RSS, and cancellation la
 
 ## CLI and primary sources
 
-`sideport inspect`, `export`, and `run` use the real engine. Export exposes typed plist edits,
+`sideport` exposes the engine: `inspect`, `export` (ad-hoc, unsigned, original, Apple ID),
+`install`, `run`, `settings`, `account` (list, login, logout, import), `certificates`,
+`app-ids`, `registered-devices`, `devices`, `device` (apps, uninstall, profiles,
+remove-profile, pair), `installations`, `installation` (refresh, forget, auto-refresh),
+`refresh-due` and `daemon`. Terminal prompts cover every prompt kind; without a terminal they
+are declined. Hidden options select fixture origins, profile anchors and file secrets for
+subprocess tests. `inspect`, `export`, and `run` use the real engine. Export exposes typed plist edits,
 identifier/name/version/OS changes, extension policy, file sharing, device restriction removal,
 local injection, replacement/deletion, progress, cancellation, and save-path prompts. JSON
 results go to stdout; job diagnostics go to stderr. Inspection JSON omits icon pixel bytes.
@@ -99,9 +105,9 @@ UI.md records its implementation, primary sources, and rendered evidence.
 
 ## Verification and assumptions
 
-The five-crate suite currently has 123 tests: sl-bundle 27, sl-codesign 39, sl-macho 10,
-sl-engine 42, and sl-cli 5. The full workspace also runs sl-apple 33, sl-device 12 and sl-app 8,
-for 176, plus two ignored local probes. The engine authentication/portal and CLI anisette tests are
+The five-crate suite currently has 125 tests: sl-bundle 27, sl-codesign 39, sl-macho 10,
+sl-engine 42, and sl-cli 7. The full workspace also runs sl-apple 33, sl-device 13 and sl-app 8,
+for 179, plus three ignored local probes. The engine authentication/portal and CLI anisette tests are
 described in APPLE.md. Native generated universal code is exported through the real engine,
 accepted by Apple's codesign with strict/deep/all-architecture verification, and executes.
 Info.plist tampering is rejected. CLI subprocess tests cover metadata/export JSON and SIGINT

@@ -351,8 +351,7 @@ pub async fn installed_apps(provider: &UsbmuxdProvider) -> Result<Vec<InstalledA
             let info = info.into_dictionary()?;
             let text = |key: &str| info.get(key).and_then(Value::as_string).map(str::to_owned);
 
-            let developer = info.get("ProfileValidated").and_then(Value::as_boolean).unwrap_or(false)
-                || info.get("SignerIdentity").is_some();
+            let developer = sideloaded(&info);
 
             Some(InstalledApp {
                 name: text("CFBundleDisplayName").or_else(|| text("CFBundleName")).unwrap_or_else(|| bundle_id.clone()),
@@ -366,6 +365,19 @@ pub async fn installed_apps(provider: &UsbmuxdProvider) -> Result<Vec<InstalledA
     listed.sort_by_key(|app| app.name.to_lowercase());
 
     Ok(listed)
+}
+
+/// App Store apps are signed by `Apple iPhone OS Application Signing`; every other signer
+/// (development, ad-hoc, enterprise) marks a sideloaded app. Observed on a device on
+/// 2026-09-28: store apps carried that signer and no `ProfileValidated`; development-signed
+/// apps carried their developer signer and `ProfileValidated = true`.
+pub fn sideloaded(info: &Dictionary) -> bool {
+    const APP_STORE_SIGNER: &str = "Apple iPhone OS Application Signing";
+
+    let signer = info.get("SignerIdentity").and_then(Value::as_string);
+    let validated = info.get("ProfileValidated").and_then(Value::as_boolean).unwrap_or(false);
+
+    validated || signer != Some(APP_STORE_SIGNER)
 }
 
 pub async fn uninstall(provider: &UsbmuxdProvider, bundle_id: &str) -> Result<()> {
@@ -500,4 +512,29 @@ async fn mux_connection(mux: &Mux) -> Result<idevice::usbmuxd::UsbmuxdConnection
 
 fn uuid_v4() -> String {
     uuid::Uuid::new_v4().to_string().to_uppercase()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn only_app_store_signed_apps_are_not_sideloaded() {
+        let app = |signer: Option<&str>, validated: Option<bool>| {
+            let mut info = plist::Dictionary::new();
+
+            if let Some(signer) = signer {
+                info.insert("SignerIdentity".into(), signer.into());
+            }
+
+            if let Some(validated) = validated {
+                info.insert("ProfileValidated".into(), validated.into());
+            }
+
+            super::sideloaded(&info)
+        };
+
+        assert!(!app(Some("Apple iPhone OS Application Signing"), None));
+        assert!(app(Some("Apple Development: Fixture (TEAM123456)"), Some(true)));
+        assert!(app(Some("iPhone Developer: Fixture (TEAM123456)"), None));
+        assert!(app(None, None), "an unsigned or ad-hoc app is not from the App Store");
+    }
 }

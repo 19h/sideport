@@ -34,3 +34,34 @@ async fn attached_devices_answer_lockdown_and_afc_queries() {
         }
     }
 }
+
+/// Histogram of signer identities and profile validation over user apps (no app names).
+#[tokio::test]
+#[ignore = "requires usbmuxd and a paired device"]
+async fn user_app_signing_attributes() {
+    use idevice::IdeviceService;
+    use idevice::installation_proxy::InstallationProxyClient;
+
+    let mux = Mux::system().expect("usbmuxd address");
+
+    for device in mux.attached().await.expect("devices") {
+        let provider = mux.provider(&device.udid, false).await.expect("provider");
+        let mut proxy = InstallationProxyClient::connect(&provider).await.expect("installation proxy");
+        let apps = proxy.get_apps(Some("User"), None).await.expect("apps");
+
+        let mut histogram = std::collections::BTreeMap::<String, usize>::new();
+
+        for info in apps.values() {
+            let info = info.as_dictionary().expect("app info");
+            let signer = info.get("SignerIdentity").and_then(plist::Value::as_string).unwrap_or("<none>");
+            let validated = info.get("ProfileValidated").and_then(plist::Value::as_boolean);
+            let receipt = info.contains_key("ApplicationDSID") || info.contains_key("iTunesMetadata");
+
+            *histogram
+                .entry(format!("signer={signer} validated={validated:?} store-metadata={receipt}"))
+                .or_default() += 1;
+        }
+
+        println!("{histogram:#?}");
+    }
+}
