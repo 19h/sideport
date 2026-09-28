@@ -43,6 +43,9 @@ uses data descriptors and emits ZIP64 when required, without seeking or retainin
 payloads. Format fields follow
 [PKWARE APPNOTE 6.3.10](https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT).
 Atomic file output keeps the previous destination until the new file is flushed and synced.
+Folder output (`save_folder`) writes `<destination>/Payload/<App>.app` with symlinks and modes,
+building in a sibling temporary directory that is renamed into place; an existing destination
+or one inside the staging tree is refused.
 
 Directory permissions are retained separately while staging directories remain writable.
 New-file creation refuses existing filesystem aliases; symlinks are installed after regular
@@ -111,8 +114,8 @@ High impact: Apple authentication/provisioning, real device installation, the re
 CLI workflows and GPUI remain incomplete. Real inspection and local exports are now wired
 through engine/CLI and independently verified. ARCHITECTURE.md retains the full ledger.
 
-Medium impact: remote/special/deb injection preparation, icon/asset-catalog editing,
-portable filename indirection and folder output remain pending. Forward ZIP streaming still
+Medium impact: remote/special/deb injection preparation, icon/asset-catalog editing and
+portable filename indirection remain pending. Forward ZIP streaming still
 needs cancellation/backpressure/resume integration with AFC.
 
 Low impact: output file replacement uses one atomic temporary-file commit rather than the

@@ -121,6 +121,19 @@ pub(crate) async fn list(inner: &Inner) -> Result<Vec<DeviceInfo>> {
         });
     }
 
+    if let Some(mac) = inner.mac() {
+        devices.push(DeviceInfo {
+            udid: mac.udid.clone(),
+            name: mac.name.clone(),
+            product_type: mac.model.clone(),
+            model_name: Some("This Mac".into()),
+            os_version: mac.os_version.clone(),
+            device_class: "Mac".into(),
+            connections: Vec::new(),
+            paired: true,
+        });
+    }
+
     *inner.devices.snapshot.lock() = Some(devices.clone());
 
     Ok(devices)

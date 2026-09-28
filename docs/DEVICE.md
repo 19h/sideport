@@ -79,6 +79,28 @@ data directory run it once (claims older than one hour are taken over), and runs
 interaction: prompts are declined, so second factors, revocations and retry questions fail the
 refresh instead of waiting.
 
+## Apple Silicon Mac
+
+On Apple Silicon the device list includes this Mac (`device_class` `Mac`, model name "This
+Mac") with the provisioning UDID System Information reports; the recovered `get_m1_udid` helper
+reads the same value through MobileGestalt. A device job for that UDID requires Apple ID
+signing. Provisioning registers the Mac as a device and, as the recovered client does for Apple
+Silicon, mangles free-team identifiers regardless of OS version. The signed app is written as
+`<tmp>/sideport-m1-<uuid>/Payload/<App>.app`, then converted (recovered `m1ConvertAndInstall`):
+`Payload` → `Wrapper`, a relative `WrappedBundle` → `Wrapper/<App>.app` link, the executable made
+0755, and `sideloadly.tag` holding the installation token. Placement in the applications
+directory (default `/Applications`) replaces an application whose tag holds the same token
+(wherever the user renamed it), else uses `<display name>.app` with `/` replaced by `_`,
+overwriting only an application whose wrapped bundle has the same identifier and otherwise
+choosing `<name>-<n>.app`. Tracked installations use a stable token derived from the bundle ID,
+so refreshes replace their application; one-off installs write an empty token. The outcome's
+`exported_to` is the installed application path.
+
+Differences: the recovered client chmods `Wrapper/<App>.app/<App>` (assuming the executable
+is named after the app); Sideport uses `CFBundleExecutable`. Its token is a random UUID stored
+with the installation; Sideport derives it from the bundle ID. Launching the installed app has
+not been verified; it needs an Apple-issued development identity whose profile lists the Mac.
+
 ## Verification
 
 Eleven fault-injection tests run the policy against a fake device: clean install order and
@@ -94,7 +116,10 @@ device registration, the UDID in the embedded profile, the installation record a
 refresh reusing the certificate while keeping the refresh choice, and forgetting that deletes the
 stored copy; ad-hoc and byte-identical original installs without an account; an interrupted
 streamed upload whose resumed bytes equal a clean stream; and device values, profiles, apps,
-uninstall, pairing and a detached-device error. Store tests cover schema migration from version
+uninstall, pairing and a detached-device error. An Apple Silicon test registers a fixed Mac
+UDID, checks the profile, wrapper, link and tag in a temporary applications directory, refreshes
+into an application the user renamed, places a one-off install by name, and refuses ad-hoc
+signing. The CLI lists this Mac by its computer name through the real system query. Store tests cover schema migration from version
 1 and refresh claims, including takeover of a stale claim.
 
 On 2026-09-28 an ignored read-only probe (`cargo test -p sl-device --test probe -- --ignored`)

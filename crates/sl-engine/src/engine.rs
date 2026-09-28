@@ -8,6 +8,7 @@ mod anisette;
 mod auth;
 mod devices;
 mod files;
+mod mac;
 mod portal;
 mod provision;
 mod refresh;
@@ -23,6 +24,7 @@ use crate::types::*;
 pub use anisette::MachineAnisette;
 pub use devices::DeviceBackend;
 use futures::channel::oneshot;
+pub use mac::{MacTarget, MacTargetSetting};
 use parking_lot::{Mutex, RwLock};
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -51,6 +53,8 @@ pub struct EngineConfig {
     pub device_backend: Option<DeviceBackend>,
     /// Local anisette source (default: AOSKit on macOS, none elsewhere).
     pub machine_anisette: Option<MachineAnisette>,
+    /// This Mac as an install target (default: detected with the system device layer).
+    pub mac_target: MacTargetSetting,
 }
 
 /// Notifications from the background refresh scheduler.
@@ -73,6 +77,8 @@ struct Inner {
     profile_trust: sl_codesign::ProfileTrust,
     devices: devices::Devices,
     machine: Option<Arc<dyn sl_apple::anisette::MachineSource>>,
+    mac_setting: MacTargetSetting,
+    mac: std::sync::OnceLock<Option<MacTarget>>,
     /// Serializes signing-key creation within this process; the store serializes processes.
     key_lock: Mutex<()>,
     accounts: Mutex<BTreeMap<String, LiveAccount>>,
@@ -90,6 +96,17 @@ struct Subscribers {
 }
 
 impl Inner {
+    /// This Mac as an install target, detected once.
+    fn mac(&self) -> Option<&MacTarget> {
+        self.mac
+            .get_or_init(|| match &self.mac_setting {
+                MacTargetSetting::Detect => mac::detect(),
+                MacTargetSetting::Disabled => None,
+                MacTargetSetting::Fixed(target) => Some(target.clone()),
+            })
+            .as_ref()
+    }
+
     /// Send a device snapshot to subscribers; `false` once every engine handle is gone.
     fn publish_devices(&self, devices: &[DeviceInfo]) -> bool {
         let Some(subscribers) = self.subscribers.upgrade() else {
@@ -183,6 +200,11 @@ impl Engine {
                 store,
                 secrets,
                 profile_trust,
+                mac_setting: match (&config.mac_target, &config.device_backend) {
+                    (MacTargetSetting::Detect, Some(_)) => MacTargetSetting::Disabled,
+                    (setting, _) => setting.clone(),
+                },
+                mac: std::sync::OnceLock::new(),
                 devices: devices::Devices::new(config.device_backend),
                 machine: config
                     .machine_anisette

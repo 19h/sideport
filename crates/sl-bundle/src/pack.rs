@@ -139,6 +139,41 @@ impl BundleArchive {
         write_items(writer, items, options, control)
     }
 
+    /// Write the prepared app as `<destination>/Payload/<name>.app`, the recovered folder output
+    /// used for Apple Silicon installs. The destination must not exist; the tree is built in a
+    /// sibling temporary directory and renamed into place after the copy completes.
+    pub fn save_folder(&self, destination: &Path, control: Control<'_>) -> Result<()> {
+        control.check()?;
+
+        match fs::symlink_metadata(destination) {
+            Ok(_) => return Err(Error::Path(format!("{} already exists", destination.display()))),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => return Err(Error::Io { path: destination.to_owned(), source }),
+        }
+
+        let parent = destination.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        let canonical_parent = io(parent, fs::canonicalize(parent))?;
+        let canonical_root = io(self.root(), fs::canonicalize(self.root()))?;
+
+        if canonical_parent.starts_with(canonical_root) {
+            return Err(Error::Path("output must be outside the staging tree".into()));
+        }
+
+        let name = self
+            .bundle_relative()
+            .file_name()
+            .ok_or_else(|| Error::Path(self.bundle_relative().display().to_string()))?;
+
+        let staging = io(parent, tempfile::Builder::new().prefix(".sideport-folder").tempdir_in(parent))?;
+        let payload = staging.path().join("Payload").join(name);
+
+        files::copy_tree(&self.bundle_path(), &payload, control)?;
+        control.check()?;
+
+        let staged = staging.keep();
+        io(destination, fs::rename(&staged, destination))
+    }
+
     /// Replace the destination only after packing, flushing and syncing succeed.
     pub fn save(
         &self,

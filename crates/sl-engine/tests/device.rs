@@ -308,3 +308,94 @@ async fn device_utilities_list_apps_profiles_and_pairing_state() {
     let missing = run(&engine, harness.spec(harness.app(), SigningMode::AdHoc, AppOptions::default()));
     assert!(matches!(missing.result, Err(EngineError::DeviceUnavailable(_))), "{:?}", missing.result);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn apple_silicon_installs_register_the_mac_and_place_a_tagged_wrapper() {
+    let harness = Harness::new().await;
+    let applications = harness.temporary.path().join("Applications");
+    std::fs::create_dir(&applications).expect("applications");
+
+    let mac = sl_engine::MacTarget {
+        udid: "00006041-001A2B3C4D5E6F70".into(),
+        name: "Fixture Mac".into(),
+        model: "Mac16,5".into(),
+        os_version: "27.2".into(),
+        applications: applications.clone(),
+    };
+
+    let config = EngineConfig {
+        data_dir: Some(harness.data_dir()),
+        portal_origin: Some(FakePortal::origin(&harness.server)),
+        profile_trust: Some(ProfileChain::shared().trust()),
+        device_backend: Some(DeviceBackend(harness.device.backend())),
+        mac_target: sl_engine::MacTargetSetting::Fixed(mac.clone()),
+        file_secrets: true,
+        disable_scheduler: true,
+        ..EngineConfig::default()
+    };
+    let engine = Engine::new(config).expect("engine");
+    let mut settings = engine.settings();
+    settings.anisette = AnisetteSetting::Remote { url: format!("{}/anisette", harness.server.uri()) };
+    engine.update_settings(settings).expect("settings");
+
+    let sessions =
+        serde_json::json!({ format!("{APPLE_ID}:a"): { "_type": "GsaAuthenticator", "dsid": "42", "gs_token": "t" } });
+    let path = harness.temporary.path().join("sessions.json");
+    fs::write(&path, serde_json::to_vec(&sessions).expect("JSON")).expect("sessions");
+    engine.import_sessions(path).expect("import");
+
+    let listed = engine.devices().await.expect("devices");
+    assert!(listed.iter().any(|device| device.udid == mac.udid
+        && device.device_class == "Mac"
+        && device.model_name.as_deref() == Some("This Mac")));
+
+    let spec = |track: bool| JobSpec {
+        source: harness.ipa(),
+        target: Target::Device { udid: mac.udid.clone(), prefer_network: false },
+        signing: SigningMode::AppleId { apple_id: APPLE_ID.into() },
+        options: AppOptions { track_for_refresh: track, ..AppOptions::default() },
+    };
+
+    let first = run(&engine, spec(true)).result.expect("Mac install");
+    let placed = first.exported_to.clone().expect("installed path");
+
+    assert_eq!(placed, applications.join("App.app"));
+    assert_eq!(fs::read_link(placed.join("WrappedBundle")).expect("link"), Path::new("Wrapper/App.app"));
+    assert!(placed.join("Wrapper/App.app/embedded.mobileprovision").is_file());
+    assert!(!fs::read_to_string(placed.join("sideloadly.tag")).expect("tag").is_empty());
+
+    let profile = ProvisioningProfile::parse(
+        &fs::read(placed.join("Wrapper/App.app/embedded.mobileprovision")).expect("profile"),
+    )
+    .expect("profile decodes");
+    assert!(profile.provisioned_devices.iter().any(|device| device == &mac.udid));
+    assert!(
+        harness.portal.state().requests.iter().any(
+            |request| request.action == "ios/addDevice" && request.field("deviceNumber") == Some(mac.udid.as_str())
+        )
+    );
+    assert_eq!(
+        first.bundle_id,
+        format!("com.example.app.{TEAM}"),
+        "Apple Silicon targets always mangle for free teams"
+    );
+
+    fs::rename(&placed, applications.join("Renamed.app")).expect("user renames the app");
+    let refreshed = run_refresh(&engine, first.installation_id.expect("tracked"));
+    assert_eq!(
+        refreshed.expect("refresh").exported_to,
+        Some(applications.join("Renamed.app")),
+        "the tag finds the renamed app"
+    );
+
+    let untracked = run(&engine, spec(false)).result.expect("one-off install");
+    assert_eq!(
+        untracked.exported_to,
+        Some(applications.join("App.app")),
+        "no tag match; the display name is free again"
+    );
+
+    let adhoc = JobSpec { signing: SigningMode::AdHoc, ..spec(false) };
+    assert!(matches!(run(&engine, adhoc).result, Err(EngineError::Unsupported(_))));
+    assert!(harness.device.state().installed.is_empty(), "nothing went to the iPhone fixture");
+}

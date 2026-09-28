@@ -2,7 +2,7 @@
 
 use super::devices::{self, device_error};
 use super::provision::{self, DeviceTarget, ProvisionRequest, Provisioned};
-use super::{Inner, acquire, files};
+use super::{Inner, acquire, files, mac};
 use crate::error::{EngineError, Result};
 use crate::job::{JobContext, PromptKind, PromptReply, Stage};
 use crate::pipeline::{self, IdentityPlan, Inspected, SigningPlan};
@@ -127,6 +127,10 @@ async fn install_job(inner: Arc<Inner>, context: JobContext, spec: JobSpec) -> R
 
     pipeline::validate_options(&spec)?;
 
+    if let Some(mac) = inner.mac().filter(|mac| mac.udid == udid).cloned() {
+        return mac_install(inner, context, spec, mac).await;
+    }
+
     let backend = inner.devices.backend()?;
     let entitlements = spec.options.entitlements.as_deref().map(pipeline::load_entitlements).transpose()?;
     let inspected = pipeline::inspect_job(&context, &spec).await?;
@@ -213,6 +217,97 @@ async fn install_job(inner: Arc<Inner>, context: JobContext, spec: JobSpec) -> R
     };
 
     Ok(JobOutcome { bundle_id, exported_to: None, expires: signed.expires, installation_id })
+}
+
+/// Apple ID install on this Mac: register its provisioning UDID (identifiers always mangled for
+/// free teams, as the recovered client mangles for Apple Silicon), write a folder, wrap it and
+/// place it in the applications directory.
+async fn mac_install(inner: Arc<Inner>, context: JobContext, spec: JobSpec, mac: mac::MacTarget) -> Result<JobOutcome> {
+    let SigningMode::AppleId { apple_id } = &spec.signing else {
+        return Err(EngineError::Unsupported("installing on this Mac requires Apple ID signing".into()));
+    };
+
+    let entitlements = spec.options.entitlements.as_deref().map(pipeline::load_entitlements).transpose()?;
+    let inspected = pipeline::inspect_job(&context, &spec).await?;
+
+    let device = DeviceTarget {
+        udid: mac.udid.clone(),
+        name: Some(mac.name.clone()),
+        device_class: Some("AppleSilicon".into()),
+        os_version: None,
+    };
+
+    let request = provision_request(&spec, &inspected, Some(device))?;
+    let provisioned = provision::provision(inner.clone(), context.clone(), request).await?;
+
+    let signed = Signed {
+        bundle_id: provisioned.bundle_id.clone(),
+        team_id: Some(provisioned.team.team_id.clone()),
+        expires: Some(provisioned.profile.expiration_date),
+    };
+    let plan = identity_plan(provisioned, entitlements, Some(mac.udid.clone()));
+
+    let token = if spec.options.track_for_refresh { mac::token(&signed.bundle_id) } else { String::new() };
+    let staging = inner.data_dir.join("tmp");
+    std::fs::create_dir_all(&staging).map_err(|error| EngineError::Storage(error.to_string()))?;
+
+    let worker = {
+        let context = context.clone();
+        let spec = spec.clone();
+        let applications = mac.applications.clone();
+        let bundle_id = signed.bundle_id.clone();
+
+        move || -> Result<(PathBuf, String)> {
+            let cancelled = || context.is_cancelled();
+            let progress = |progress: sl_bundle::Progress| context.progress(progress.completed, progress.total);
+            let control = Control { is_cancelled: Some(&cancelled), on_progress: Some(&progress) };
+
+            let mut archive = BundleArchive::unpack(&spec.source, ArchiveLimits::default(), control)
+                .map_err(pipeline::bundle_error)?;
+            pipeline::prepare(&mut archive, &context, &spec.options, &plan, control)?;
+
+            let info = archive.bundle().map_err(pipeline::bundle_error)?.info().clone();
+            let text = |key: &str| info.get(key).and_then(plist::Value::as_string).filter(|value| !value.is_empty());
+            let display = text("CFBundleDisplayName").or_else(|| text("CFBundleName")).unwrap_or(&bundle_id).to_owned();
+
+            context.stage(Stage::Installing);
+
+            let folder = staging.join(format!("sideport-m1-{}", uuid::Uuid::new_v4()));
+            archive.save_folder(&folder, control).map_err(pipeline::bundle_error)?;
+
+            let installed = mac::wrap(&folder, &token)
+                .and_then(|_| mac::place(&folder, &applications, &token, &bundle_id, &display));
+
+            if installed.is_err() {
+                let _ = std::fs::remove_dir_all(&folder);
+            }
+
+            Ok((installed?, display))
+        }
+    };
+
+    let (installed, _display) = tokio::task::spawn_blocking(worker)
+        .await
+        .map_err(|error| EngineError::Other(format!("installation worker failed: {error}")))??;
+
+    context.stage(Stage::Done);
+    context.info(format!("Installed {}", installed.display()));
+
+    let installation_id = if spec.options.track_for_refresh {
+        let record =
+            RecordedInstall { apple_id, udid: &mac.udid, device_name: &mac.name, bundle_id: &signed.bundle_id };
+
+        Some(record_installation(&inner, &spec, &inspected.summary, &signed, record)?)
+    } else {
+        None
+    };
+
+    Ok(JobOutcome {
+        bundle_id: signed.bundle_id,
+        exported_to: Some(installed),
+        expires: signed.expires,
+        installation_id,
+    })
 }
 
 /// A package ready for upload plus the final bundle identifier when it was re-read.
@@ -599,10 +694,4 @@ fn record_installation(
     };
 
     inner.store.record_installation(&installation)
-}
-
-/// For tests: the directory holding stored IPA copies.
-#[allow(dead_code)]
-pub(super) fn stored_files(inner: &Inner) -> PathBuf {
-    inner.data_dir.join("files")
 }

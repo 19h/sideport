@@ -19,6 +19,22 @@ pub fn hardware_model() -> Result<String> {
     Ok(model)
 }
 
+/// The user-visible computer name (System Settings › General › About).
+pub fn computer_name() -> Result<String> {
+    if !cfg!(target_os = "macos") {
+        return Err(Error::Unsupported);
+    }
+
+    let output = Command::new("/usr/sbin/scutil").args(["--get", "ComputerName"]).output().map_err(system_error)?;
+    let name = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+
+    if !output.status.success() || name.is_empty() {
+        return Err(Error::System("the computer name is unavailable".into()));
+    }
+
+    Ok(name)
+}
+
 /// `(ProductVersion, ProductBuildVersion)` from SystemVersion.plist (recovered `sw_vers`).
 pub fn os_version() -> Result<(String, String)> {
     if !cfg!(target_os = "macos") {

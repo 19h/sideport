@@ -8,7 +8,7 @@
 mod aoskit;
 mod system;
 
-pub use system::{hardware_model, os_version, provisioning_udid};
+pub use system::{computer_name, hardware_model, os_version, provisioning_udid};
 
 use futures::FutureExt;
 use futures::future::BoxFuture;

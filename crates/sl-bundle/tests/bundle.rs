@@ -255,3 +255,29 @@ fn malformed_metadata_and_path_edits_fail_without_touching_original() {
     assert!(archive.patch(&options, Control::default()).is_err());
     assert_eq!(fs::read(root.join("Info.plist")).expect("source unchanged"), before);
 }
+
+#[cfg(unix)]
+#[test]
+fn folder_output_copies_the_prepared_app_with_symlinks_and_refuses_existing_paths() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temporary = tempfile::tempdir().expect("tempdir");
+    let root = temporary.path().join("Test.app");
+    common::synthetic_bundle(&root, "com.example.folder", "Test", "APPL");
+    fs::create_dir(root.join("Resources")).expect("resources");
+    fs::write(root.join("Resources/data.txt"), b"data").expect("resource");
+    std::os::unix::fs::symlink("Resources/data.txt", root.join("link.txt")).expect("symlink");
+
+    let archive = unpack(&root);
+    let output = temporary.path().join("folder");
+    archive.save_folder(&output, Control::default()).expect("folder output");
+
+    let app = output.join("Payload/Test.app");
+    assert_eq!(fs::read(app.join("Resources/data.txt")).expect("copied"), b"data");
+    assert_eq!(fs::read_link(app.join("link.txt")).expect("link"), Path::new("Resources/data.txt"));
+    assert_eq!(fs::metadata(app.join("Test")).expect("executable").permissions().mode() & 0o777, 0o755);
+
+    assert!(archive.save_folder(&output, Control::default()).is_err(), "an existing destination is refused");
+    assert!(archive.save_folder(&archive.root().join("inside"), Control::default()).is_err());
+    assert_eq!(fs::read_dir(temporary.path()).expect("entries").count(), 2, "no temporary directory is left behind");
+}
