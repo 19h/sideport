@@ -19,6 +19,9 @@ use std::{
 /// Entitlement override files are small plists; larger inputs are rejected before parsing.
 const MAX_ENTITLEMENTS_BYTES: u64 = 1024 * 1024;
 
+/// A custom icon is a single PNG; larger inputs are rejected before decoding.
+const MAX_ICON_BYTES: u64 = 32 * 1024 * 1024;
+
 /// How the prepared bundle is signed.
 #[derive(Debug)]
 pub(crate) enum SigningPlan {
@@ -189,8 +192,10 @@ pub(crate) async fn output_path(context: &JobContext, spec: &JobSpec, summary: &
 
 /// Reject options that the requested signing mode cannot apply, before any output changes.
 pub(crate) fn validate_options(spec: &JobSpec) -> Result<()> {
-    if spec.options.icon.is_some() && spec.signing != SigningMode::Original {
-        return Err(EngineError::Unsupported("custom icon replacement is not connected to the engine yet".into()));
+    if spec.options.icon.is_some() && spec.signing == SigningMode::Original {
+        return Err(EngineError::Unsupported(
+            "custom icons need a re-signing mode; the original archive is copied unchanged".into(),
+        ));
     }
 
     let identity = matches!(spec.signing, SigningMode::AppleId { .. });
@@ -287,6 +292,12 @@ pub(crate) fn prepare(
 
     archive.patch(&patch, control).map_err(bundle_error)?;
 
+    if let Some(icon) = &options.icon {
+        let png = read_bounded(icon, MAX_ICON_BYTES)?;
+        let report = archive.replace_icon(&png, control).map_err(bundle_error)?;
+        context.info(format!("Replaced {} icon file(s).", report.replaced.len()));
+    }
+
     if !options.injections.is_empty() {
         let injections = options
             .injections
@@ -356,16 +367,23 @@ pub(crate) fn prepare(
 /// Load a user entitlement override plist (recovered "alternate entitlements", merged with
 /// `dict.update` over the profile's entitlements).
 pub(crate) fn load_entitlements(path: &Path) -> Result<Dictionary> {
+    let bytes = read_bounded(path, MAX_ENTITLEMENTS_BYTES)?;
+
+    sl_bundle::parse_dictionary(&bytes).map_err(bundle_error)
+}
+
+/// Read a small input file, rejecting anything larger than `maximum` before it is loaded.
+fn read_bounded(path: &Path, maximum: u64) -> Result<Vec<u8>> {
     let file = File::open(path).map_err(storage_error)?;
     let mut bytes = Vec::new();
 
-    file.take(MAX_ENTITLEMENTS_BYTES + 1).read_to_end(&mut bytes).map_err(storage_error)?;
+    file.take(maximum + 1).read_to_end(&mut bytes).map_err(storage_error)?;
 
-    if bytes.len() as u64 > MAX_ENTITLEMENTS_BYTES {
-        return Err(EngineError::InvalidApp("entitlement override file exceeds 1 MiB".into()));
+    if bytes.len() as u64 > maximum {
+        return Err(EngineError::InvalidApp(format!("{} exceeds {maximum} bytes", path.display())));
     }
 
-    sl_bundle::parse_dictionary(&bytes).map_err(bundle_error)
+    Ok(bytes)
 }
 
 /// Overrides the profile does not grant are signed as requested; the device decides whether to

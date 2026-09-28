@@ -49,6 +49,10 @@ sha1.workspace = true
 sl-testkit.workspace = true
 uuid.workspace = true
 wiremock.workspace = true
+# Build `.deb` fixtures for injection-resolution tests.
+ar.workspace = true
+tar.workspace = true
+flate2.workspace = true
 
 [lints]
 workspace = true

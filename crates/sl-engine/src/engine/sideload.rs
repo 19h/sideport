@@ -2,7 +2,7 @@
 
 use super::devices::{self, device_error};
 use super::provision::{self, DeviceTarget, ProvisionRequest, Provisioned};
-use super::{Inner, acquire, files, mac};
+use super::{Inner, acquire, files, inject, mac};
 use crate::error::{EngineError, Result};
 use crate::job::{JobContext, PromptKind, PromptReply, Stage};
 use crate::pipeline::{self, IdentityPlan, Inspected, SigningPlan};
@@ -27,23 +27,38 @@ const STREAM_BLOCK: usize = 256 * 1024;
 const STREAM_DEPTH: usize = 8;
 
 pub(super) async fn run(inner: Arc<Inner>, context: JobContext, mut spec: JobSpec) -> Result<JobOutcome> {
-    if !acquire::is_remote(&spec.source) {
-        context.guard_inputs(&spec)?;
+    // A downloaded source is removed after the job; tracked installations keep their own copy.
+    let downloaded = if acquire::is_remote(&spec.source) {
+        let source = spec.source.to_string_lossy().into_owned();
+        let path = acquire::fetch(&inner, &context, &source).await?;
+        spec.source = path.clone();
 
-        return dispatch(inner, context, spec).await;
+        Some(path)
+    } else {
+        None
+    };
+
+    let outcome = resolve_and_dispatch(inner, context, spec).await;
+
+    if let Some(path) = downloaded {
+        let _ = std::fs::remove_file(&path);
     }
 
-    // A downloaded source is removed after the job; tracked installations keep their own copy.
-    let source = spec.source.to_string_lossy().into_owned();
-    let downloaded = acquire::fetch(&inner, &context, &source).await?;
+    outcome
+}
 
-    spec.source = downloaded.clone();
+/// Resolve injection sources to local files, record the job's inputs, then run it.
+async fn resolve_and_dispatch(inner: Arc<Inner>, context: JobContext, mut spec: JobSpec) -> Result<JobOutcome> {
+    // Resolve `.deb`/URL/special injection sources to local files before the offline pipeline.
+    let resolved = inject::resolve(&inner, &context, &spec.options.injections).await?;
+    spec.options.injections = resolved.injections.clone();
 
-    let outcome = match context.guard_inputs(&spec) {
-        Ok(()) => dispatch(inner, context, spec).await,
-        Err(error) => Err(error),
-    };
-    let _ = std::fs::remove_file(&downloaded);
+    context.guard_inputs(&spec)?;
+
+    let outcome = dispatch(inner, context, spec).await;
+
+    // Keep the extracted trees and cached downloads alive until preparation has copied them.
+    drop(resolved);
 
     outcome
 }

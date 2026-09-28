@@ -32,8 +32,13 @@ pub struct EditArgs {
     pub remove_extension: Vec<String>,
     #[arg(long)]
     pub keep_watch_app: bool,
-    #[arg(long, value_name = "FILE_OR_DIRECTORY")]
+    /// Inject a local dylib/framework/bundle or `.deb`, an `http(s)://` URL, or a special
+    /// (`///special/substrate`, `///special/substitute`, `///special/spoofer`).
+    #[arg(long, value_name = "PATH_URL_OR_SPECIAL")]
     pub inject: Vec<PathBuf>,
+    /// Replace the app icons with this PNG, resized to each declared icon size.
+    #[arg(long, value_name = "PNG")]
+    pub icon: Option<PathBuf>,
     #[arg(long, value_name = "TARGET=SOURCE", value_parser = parse_replacement)]
     pub replace: Vec<FileReplacement>,
     #[arg(long, value_name = "TARGET")]
@@ -92,6 +97,7 @@ impl EditArgs {
             injections: self.inject.into_iter().map(|source| LibraryInjection { source, name: None }).collect(),
             replacements,
             extra_info,
+            icon: self.icon,
             entitlements: self.entitlements,
             provision_extensions: self.provision_extensions,
             ..AppOptions::default()

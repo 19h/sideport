@@ -6379,6 +6379,7 @@ dependencies = [
  "hex",
  "md-5",
  "reqwest",
+ "serde_json",
  "sha1",
  "tempfile",
  "thiserror 2.0.21",
@@ -6567,10 +6568,12 @@ dependencies = [
 name = "sl-engine"
 version = "0.1.0"
 dependencies = [
+ "ar",
  "async-channel 2.5.0",
  "base64 0.22.1",
  "chrono",
  "dirs 6.0.0",
+ "flate2",
  "futures",
  "gethostname",
  "hex",
@@ -6593,6 +6596,7 @@ dependencies = [
  "sl-macos",
  "sl-services",
  "sl-testkit",
+ "tar",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",

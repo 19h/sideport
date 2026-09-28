@@ -243,7 +243,9 @@ fn unavailable_backends_and_identity_only_edits_fail_before_output_mutation() {
     apple.signing = SigningMode::AppleId { apple_id: "test@example.invalid".into() };
     let mut device = base.clone();
     device.target = Target::Device { udid: "test".into(), prefer_network: false };
+    // A custom icon needs a re-signing mode; the original archive is copied unchanged.
     let mut icon = base.clone();
+    icon.signing = SigningMode::Original;
     icon.options.icon = Some("icon.png".into());
     let mut entitlements = base;
     entitlements.options.entitlements = Some("entitlements.plist".into());
@@ -439,4 +441,119 @@ fn an_input_rewritten_while_the_job_runs_fails_the_job_before_output() {
     let result = block_on(handle.result());
     assert!(matches!(&result, Err(EngineError::InvalidApp(message)) if message.contains("Info.plist")), "{result:?}");
     assert!(!output.exists(), "no output is written from a changed input");
+}
+
+/// Build a minimal `.deb` whose `data.tar.gz` holds one MobileSubstrate dylib.
+fn substrate_deb(directory: &Path, dylib: &[u8]) -> PathBuf {
+    use ar::{Builder as ArBuilder, Header as ArHeader};
+    use std::io::Write;
+    use tar::{EntryType, Header as TarHeader};
+
+    let mut tar = tar::Builder::new(Vec::new());
+
+    let mut dir = TarHeader::new_gnu();
+    dir.set_entry_type(EntryType::Directory);
+    dir.set_mode(0o755);
+    dir.set_size(0);
+    tar.append_data(&mut dir, "Library/MobileSubstrate/DynamicLibraries", std::io::empty()).expect("dir");
+
+    let mut file = TarHeader::new_gnu();
+    file.set_entry_type(EntryType::Regular);
+    file.set_mode(0o644);
+    file.set_size(dylib.len() as u64);
+    tar.append_data(&mut file, "Library/MobileSubstrate/DynamicLibraries/Tweak.dylib", dylib).expect("dylib");
+
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    encoder.write_all(&tar.into_inner().expect("tar")).expect("gz");
+    let payload = encoder.finish().expect("gz");
+
+    let mut archive = ArBuilder::new(Vec::new());
+    archive.append(&ArHeader::new(b"debian-binary".to_vec(), 4), &b"2.0\n"[..]).expect("binary");
+    archive.append(&ArHeader::new(b"data.tar.gz".to_vec(), payload.len() as u64), &payload[..]).expect("data");
+
+    let path = directory.join("tweak.deb");
+    fs::write(&path, archive.into_inner().expect("ar")).expect("write deb");
+
+    path
+}
+
+#[test]
+fn a_local_deb_injection_is_unpacked_and_installed_into_frameworks() {
+    let temporary = tempfile::tempdir().expect("tempdir");
+    let root = temporary.path().join("Test.app");
+    common::synthetic_bundle(&root, "com.example.test", "Test", "APPL");
+
+    let deb = substrate_deb(temporary.path(), &common::macho());
+    let output = temporary.path().join("injected.ipa");
+
+    let mut job = spec(root, Some(output.clone()), SigningMode::AdHoc);
+    job.options.injections = vec![sl_engine::LibraryInjection { source: deb, name: None }];
+
+    let outcome = block_on(engine(temporary.path()).start(job).result()).expect("deb export");
+    assert_eq!(outcome.bundle_id, "com.example.test");
+
+    let archive = BundleArchive::unpack(&output, ArchiveLimits::default(), Control::default()).expect("output");
+    let injected = archive.bundle_path().join("Frameworks/Tweak.dylib");
+    assert!(injected.is_file(), "the deb's dylib is copied into Frameworks");
+
+    let main = fs::read(archive.bundle_path().join("Test")).expect("main");
+    let image = sl_macho::MachO::parse(&main).expect("main Mach-O");
+    let loads_injected = image
+        .commands
+        .iter()
+        .filter(|command| command.kind == sl_macho::LC_LOAD_DYLIB)
+        .filter_map(|command| {
+            let offset = image.endian.u32(command.bytes, 8).ok()? as usize;
+            command.bytes.get(offset..)?.split(|byte| *byte == 0).next()
+        })
+        .any(|name| name == b"@executable_path/Frameworks/Tweak.dylib");
+
+    assert!(loads_injected, "the executable loads the injected dylib");
+}
+
+#[test]
+fn a_special_substrate_injection_is_resolved_against_the_configured_host() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let temporary = tempfile::tempdir().expect("tempdir");
+    let root = temporary.path().join("Test.app");
+    common::synthetic_bundle(&root, "com.example.test", "Test", "APPL");
+    let deb = fs::read(substrate_deb(temporary.path(), &common::macho())).expect("deb bytes");
+
+    let server = block_on(MockServer::start());
+    block_on(
+        Mock::given(method("GET"))
+            .and(path("/package/mobilesubstrate/"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("<span>latest\">0.9.7000</span>"))
+            .mount(&server),
+    );
+    block_on(
+        Mock::given(method("GET"))
+            .and(path("/debs/mobilesubstrate_0.9.7000_iphoneos-arm.deb"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(deb))
+            .mount(&server),
+    );
+
+    let sources = sl_acquire::SpecialSources {
+        substrate_index: format!("{}/package/mobilesubstrate/", server.uri()),
+        substrate_deb_template: format!("{}/debs/mobilesubstrate_{{version}}_iphoneos-arm.deb", server.uri()),
+        ..sl_acquire::SpecialSources::default()
+    };
+    let engine = Engine::new(EngineConfig {
+        data_dir: Some(temporary.path().join("data")),
+        disable_scheduler: true,
+        special_sources: Some(sources),
+        ..EngineConfig::default()
+    })
+    .expect("engine");
+
+    let output = temporary.path().join("special.ipa");
+    let mut job = spec(root, Some(output.clone()), SigningMode::AdHoc);
+    job.options.injections = vec![sl_engine::LibraryInjection { source: "///special/substrate".into(), name: None }];
+
+    block_on(engine.start(job).result()).expect("special export");
+
+    let archive = BundleArchive::unpack(&output, ArchiveLimits::default(), Control::default()).expect("output");
+    assert!(archive.bundle_path().join("Frameworks/Tweak.dylib").is_file(), "the resolved deb's dylib is injected");
 }

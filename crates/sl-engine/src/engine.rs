@@ -8,6 +8,7 @@ mod anisette;
 mod auth;
 mod devices;
 mod files;
+mod inject;
 mod ipc;
 mod mac;
 mod portal;
@@ -49,6 +50,8 @@ pub struct EngineConfig {
     pub auth_origin: Option<String>,
     /// Override the developer-services origin for controlled service fixtures.
     pub portal_origin: Option<String>,
+    /// Injection source endpoints (substrate/substitute/spoofer). Default: the recovered hosts.
+    pub special_sources: Option<sl_acquire::SpecialSources>,
     /// Trust anchors and signer names for downloaded profiles (default: Apple Root CA policy).
     pub profile_trust: Option<sl_codesign::ProfileTrust>,
     /// Device layer (default: the system usbmuxd).
@@ -82,6 +85,7 @@ struct Inner {
     settings: RwLock<(Settings, crate::settings::Revision)>,
     auth_origin: String,
     portal_origin: String,
+    special_sources: sl_acquire::SpecialSources,
     store: Store,
     secrets: Box<dyn SecretStore>,
     profile_trust: sl_codesign::ProfileTrust,
@@ -271,6 +275,7 @@ impl Engine {
                 settings: RwLock::new(settings),
                 auth_origin,
                 portal_origin,
+                special_sources: config.special_sources.unwrap_or_default(),
                 store,
                 secrets,
                 profile_trust,
