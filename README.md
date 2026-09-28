@@ -5,28 +5,22 @@ engineering. The full rewrite is in progress. The requirement-by-requirement evi
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and the current resume point is in
 [docs/HANDOVER.md](docs/HANDOVER.md).
 
-The current executable inspects IPA, flipped IPA, zipped-app, and app-directory inputs.
-It exports original, unsigned, and ad-hoc IPAs with recursive metadata edits, extension
-removal, local injection, and file replacement. Original archive exports preserve every
-input byte. Other operations use a private staging tree and an atomic output transaction.
+The engine inspects IPA, flipped IPA, zipped-app and app-directory inputs, edits metadata,
+removes extensions, injects local, remote, special and `.deb` tweaks, replaces files and icons,
+and signs children before parents in original, unsigned, ad-hoc or Apple ID mode. Apple ID
+signing signs in through GrandSlam (with AOSKit or remote anisette), provisions the team,
+certificate, device, App IDs and trust-verified profiles, and exports an IPA or installs it. The
+device layer discovers devices through usbmuxd and installs with the recovered resumable upload
+and retry policy, mounts Developer Disk Images, enables JIT, repairs pairing, lists and removes
+apps and profiles and streams the syslog. Installations are recorded and refreshed on a
+schedule by the CLI daemon or the `sideport-tray` menu-bar daemon, and the desktop app serves
+the recovered local IPC. `sideloadly:` links and HTTP(S) IPA URLs are job sources. Private
+Sideloadly services are only modelled (`sl-services`, nothing configured); the App Store client
+is excluded (docs/ACQUIRE.md).
 
-The GPUI desktop app provides the same inspection, editing, and export flow, with native
-file dialogs, stage progress, activity, cancellation, and persistent appearance preferences.
-
-The authentication library implements the recovered SRP/session/token cryptography, a bounded
-remote anisette provider, and a GSA client with trusted-device/SMS verification. Controlled
-HTTP fixtures cover the GSA operation sequence and retry behavior. A typed developer portal
-client covers core team, device, app-ID, certificate and profile actions. The non-demo engine
-login job uses remote anisette, attempts team enumeration, and retains its session in memory.
-Sessions, remembered passwords and the signing key persist across restarts (keychain on macOS),
-and recovered Sideloadly `sessions.json` GSA sessions can be imported. The engine provisions
-Apple ID exports: team, certificate reuse or creation, App IDs and trust-verified profiles, then
-signs the IPA with the issued identity. The device layer discovers devices through usbmuxd and
-installs Apple ID, ad-hoc or original apps with the recovered resumable upload and retry policy,
-records installations and refreshes them on a schedule (docs/DEVICE.md). Account UI/CLI and
-physical-device acceptance remain open.
-Engine/CLI anisette checks use the real transport; see
-[docs/APPLE.md](docs/APPLE.md) for independent vectors and the remaining account workflows.
+Every output is written through a private staging tree and an atomic commit; jobs fail rather
+than write output when an input changes while they read it. Physical-device installation and
+live Apple-account use have not been verified yet; see [docs/HANDOVER.md](docs/HANDOVER.md).
 
 ## Desktop
 
@@ -37,7 +31,9 @@ scripts/package-macos.sh
 
 The packaging command creates `target/debug/Sideport.app` on macOS. Pass `release` to package
 an optimized build. The desktop executable is `SideportDesktop`; the CLI remains `sideport`,
-so they also coexist on filesystems that ignore filename case.
+so they also coexist on filesystems that ignore filename case. The bundle also contains
+`sideport` and `sideport-tray` (the login item's scheduler) and registers the `sideloadly` URL
+scheme and IPA documents.
 
 On macOS, the wrapper supplies the active SDK to GPUI's bindgen build. Xcode and its Metal
 toolchain are required; `xcodebuild -downloadComponent MetalToolchain` installs the component
@@ -67,6 +63,11 @@ sideport installations
 sideport installation refresh|forget|auto-refresh ID ...
 sideport refresh-due               # one scheduler pass (LaunchAgent/cron)
 sideport daemon                    # keep the refresh scheduler running
+sideport-tray                      # the same scheduler behind a menu-bar icon (macOS, Windows)
+sideport device mount-ddi|jit|repair-pairing|heartbeat|notifications UDID ...
+sideport account default-team jane@example.com TEAMID|--ask
+sideport ipc raise [--open FILE] | enqueue ID | poll | restart
+sideport settings autostart --enable
 sideport services status           # private-service/feature state (nothing configured by default)
 sideport services check-update     # version check against a configured endpoint, if any
 ```
@@ -88,7 +89,7 @@ stdout; diagnostics go to stderr.
 
 Inspection JSON omits decoded icon bytes. Inspection does not verify unvisited archive
 payloads. Ad-hoc signing does not provision an app for stock-device installation.
-Custom icons currently return an explicit unsupported error.
+`--icon PNG` replaces loose app icons in re-signing modes; asset-catalog icons are not rewritten.
 
 ## Verification
 
@@ -96,9 +97,11 @@ Custom icons currently return an explicit unsupported error.
 scripts/cargo-ui.sh test --workspace
 scripts/cargo-ui.sh clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
+scripts/test-linux.sh        # non-desktop suite on x86_64 Linux, offline (Docker, cargo-zigbuild)
 ```
 
-Native macOS tests require Xcode command-line tools and use generated fixtures.
+Native macOS tests require Xcode command-line tools and use generated fixtures. Tests never
+contact the network except local fixture servers.
 See [docs/ENGINE.md](docs/ENGINE.md) and [docs/BUNDLE.md](docs/BUNDLE.md) for verification
 boundaries, assumptions, complexity, and remaining work. Source layout follows
 [AGENTS.md](AGENTS.md) and [docs/STYLE.md](docs/STYLE.md).
