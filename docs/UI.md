@@ -61,8 +61,8 @@ Settings keeps appearance (saved immediately) and adds the anisette provider (th
 remote URL), an optional alternate remote URL, a provider test, automatic refresh (enabled,
 threshold 1–720 h, interval 1–1440 min, Wi-Fi allowed) and the remember-password and
 stream-upload defaults. These are validated and written together by "Save settings"; the saved
-appearance is preserved. Choosing this Mac's provider shows that the engine does not implement it
-yet, because sign-in then fails.
+appearance is preserved. Choosing this Mac's provider explains that it is tried first and that
+the alternate server is used when macOS refuses it (docs/APPLE.md, local anisette).
 
 The window owns one job slot (inspection, export, installation, sign-in, certificate/App ID
 listing, revocation or refresh) and its cancellation token. Closing an active job requests
@@ -202,10 +202,11 @@ handle per installation with an icon. Engine-side list sizes are not bounded by 
 ## Bounded observations
 
 - High impact: live Apple sign-in, physical-device installation and pairing, and native rendering
-  of the new sections are unverified. Local anisette is not implemented by the engine, so real
-  sign-in needs a remote provider configured in Settings.
-- High impact: Store/private services, acquisition channels, tray/autostart and other full-scope
-  workflows still require implementation and evidence in ARCHITECTURE.md.
+  of the new sections are unverified. AOSKit refused local anisette on the development Mac, so
+  real sign-in there needs a remote or alternate provider configured in Settings.
+- High impact: Store/private services, tray and other full-scope workflows still require
+  implementation and evidence in ARCHITECTURE.md; link sources and autostart are exposed by the
+  engine and CLI but not yet by these screens.
 - Medium impact: GPUI 0.2.2's native accessibility tree exposes the window/menu rather than these
   custom form controls. Native verification therefore also uses screenshots and rendered control
   tests. Full accessibility integration, non-macOS runtime checks, settings-write latency, and

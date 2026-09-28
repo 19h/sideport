@@ -271,8 +271,9 @@ impl Sideport {
             ))
             .child(provider_choice)
             .when(!form.remote && !self.engine.is_demo(), |this| {
-                this.child(danger_text(
-                    "This Mac's provider is not available in Sideport yet; sign-in needs a remote server.",
+                this.child(muted(
+                    "This Mac's own provisioning is tried first. Recent macOS versions can refuse it; \
+                     sign-in then uses the alternate server below, so set one.",
                     cx,
                 ))
             })
