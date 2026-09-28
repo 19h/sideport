@@ -1,108 +1,125 @@
 # Sideport handover
 
-Snapshot: 2026-09-28 (Europe/Berlin), after the profile-validation follow-up. The objective
-remains the complete Rust implementation of recovered Sideloadly 0.60 client behavior with a
-GPUI desktop interface. [ARCHITECTURE.md](ARCHITECTURE.md) is the requirement ledger; this document
-records the current resume point and **known** open work. Recovered client behavior is not
-proof that an external service still operates. Its current availability is unknown.
+Snapshot: 2026-09-28 (Europe/Berlin), on `master` after the completion pass that followed the
+profile-validation resume point. The objective remains the complete Rust implementation of
+recovered Sideloadly 0.60 client behavior with a GPUI desktop interface.
+[ARCHITECTURE.md](ARCHITECTURE.md) is the requirement ledger; this document records the resume
+point, the scope decisions taken, and the verification that still needs the maintainer.
+Recovered client behavior is not proof that an external service still operates; its current
+availability is unknown.
 
-## Completed: profile validation follow-up
+## State by workstream
 
-The profile-validation resume point is committed. Commit `8b40999` (made under the maintainer's
-identity during this session) captured the codesign parser/trust sources; the following commit
-adds the bundle preflight, tests and documentation.
-
-| Item | Result |
-|---|---|
-| Field review | `validate_for` checks `CreationDate <= t < ExpirationDate`, team and team entitlement, `PREFIX.PATTERN`, platform, certificate DER and UDID. Decision: an absent `ApplicationIdentifierPrefix` list accepts only `PREFIX == Team ID`; a listed legacy prefix may differ. Wildcards match a nonempty suffix after one trailing `*`. UDIDs use the recovered casefold/hyphen-removal rule and must be hexadecimal; `ProvisionsAllDevices` is parsed. Fifteen focused tests cover the distinct cases. |
-| Trust | `ProvisioningProfile::verify_trust` with `ProfileTrust` verifies one RSA SignerInfo, signed attributes, leaf → issuer → configured anchor, Apple signer/issuer names, CA/key usage and validity at `CreationDate`. It is separate from field validation. Six generated-chain tests plus a local ignored probe: three Xcode-managed Apple profiles verified against the bundled Apple Root CA on 2026-09-28, tampered copies rejected. |
-| Signing boundary | `SigningRequest::requirements` (`ProfileRequirements`: device UDID, platform, trust, time). Every profile the pass would embed is checked against its own bundle ID before any file changes. Children without profiles inherit entitlements and embed nothing, as recovered. The engine passes defaults until Apple ID/device jobs exist. |
-| Documentation | APPLE.md profile contract, sources, A14/A15; ARCHITECTURE.md ledger/A5; BUNDLE.md and ENGINE.md counts. |
-| Gates | `scripts/cargo-ui.sh test --workspace`: 141 passed, 0 failed, 1 ignored (sl-macho 10, sl-codesign 39, sl-bundle 27, sl-apple 33, sl-engine 19, sl-cli 5, sl-app 8, sl-device 0). Strict Clippy, `fmt --check` and `git diff --check` pass. Clippy reports only a future-incompatibility note for third-party `block` and `proc-macro-error2`. |
-
-Fixture and native-signature checks still do not establish stock-device acceptance. A trusted
-profile that matches decoded fields can still be refused by a device for reasons not modelled
-here (revocation, entitlement policy, device state).
-
-## Open implementation and verification
-
-| Workstream | Open work | Required evidence / source |
+| Workstream | Implemented, with evidence | Open |
 |---|---|---|
-| Account/session | Done: persisted sessions, remembered passwords, restart restore, recovered `sessions.json` import, 1100 renewal, AOSKit local anisette bridge with per-job fallback (AOSKit refused requests on this Mac with -45070). Open: Mail/AltServer plug-in anisette, kbsync, legacy IDMS, live checks. | Dated live checks. [APPLE.md](APPLE.md), [AUTH_NOTES](../../notes/AUTH_NOTES.md). |
-| Key/certificates | Done: durable key and machine UUID, CSR flow, reuse by public key, `is_ours`, confirmed 7460 revocation. Open: live portal confirmation. | Dated live checks. [APPLE.md](APPLE.md), `crates/sl-engine/src/engine/provision.rs`. |
-| Portal provisioning | Done against the fake portal: device registration, App ID reuse/creation/quota, bundle-ID policy, tvOS selection, profile download with trust verification, per-extension option. Open: device-target wiring (needs `sl-device`), profile renewal via refresh, live checks. | Live account/device checks. [APPLE.md](APPLE.md), [MOBDEV_NOTES](../../notes/MOBDEV_NOTES.md). |
-| Apple ID signing | Done: exports and device installs through provisioning (fixtures); native codesign/OpenSSL checks. Open: physical installation. | Physical installation with an authorized account. [ENGINE.md](ENGINE.md), `crates/sl-engine/src/engine/sideload.rs`. |
-| Device transport/install | Done with fixtures: `sl-device` discovery/watch, lockdown, pairing, AFC resumable staging, framed installation proxy, recovered retry policy, ZIP streaming with backpressure, engine device jobs (Apple ID/ad-hoc/original). Wi-Fi devices surface in the list with their connection kind; heartbeat proves reachability (fixture). Read-only USB probe passed. Open: physical installation and Wi-Fi verification, tvOS PIN pairing. | Physical iOS/tvOS checks with an authorized identity. [DEVICE.md](DEVICE.md). |
-| Device utilities | Done with fixtures: app list/uninstall, profile list/remove, pairing, syslog stream with filter (real device read); Developer Disk Images (recovered mirror catalog, download/cache, `major.minor` fallback, already-mounted detection, legacy mount, personalized iOS 17+ mount with a configurable TSS client), JIT over the recovered lockdown debugserver, pairing repair with typed progress, heartbeat and notification proxy — all behind the `Backend` trait; a read-only image-mounter probe found no image mounted on the USB iPhone. The desktop Devices section drives mounting, JIT for developer-signed apps, pairing repair, heartbeats and app-change notifications against the fake device (UI.md). Open: physical DDI mount/JIT/pairing verification; tvOS PIN pairing (recovered `PairTV`; no `idevice` CU-pairing API); iOS 17+ RSD debugserver (beyond the recovered client). | Physical checks. [DEVICE.md](DEVICE.md), [MOBDEV_NOTES](../../notes/MOBDEV_NOTES.md). |
-| Refresh/state | Done: SQLite accounts/installations/stored files, installation records from device jobs, refresh replay, scheduler with cross-process claims. Open: tray/autostart/LaunchAgent, local IPC, clock-shift/crash tests. | Restart/crash, clock-shift and concurrent-process tests. [ENGINE.md](ENGINE.md), [DEVICE.md](DEVICE.md). |
-| Acquisition channels | Done with fixtures: `sideloadly:` links (recovered rules, messages, 155 countries), resumable HTTP downloads with recovered backoff, HTML/ZIP checks, MD5/SHA-1, flipped storage, `EnrichIpa`; links as engine/CLI sources. Open: App Store authentication/purchase/download (needs kbsync from the Mail plug-in, which the recovered client disables since Sonoma), URI-scheme registration. | Controlled transport fixtures and dated live checks. [ACQUIRE.md](ACQUIRE.md), [reconstruction §9](../../SIDELOADLY_DECONSTRUCTED.md). |
-| Private services | Done in `sl-services` (docs/SERVICES.md): BSDIFF40 `bspatch` cross-checked against `/usr/bin/bspatch`; a configurable `go-selfupdate` update client (JSON manifest, patch-or-full download, SHA-256 verification, `.new`/`.old`/`.bak` swap with the recovered daemon↔lib restore bug documented and corrected); a generic RS256 feature-token verifier with a Sideport-defined claim schema; engine `ServiceConfig`/`services_status`/`check_update`/`apply_feature_token` and CLI `services status`/`check-update`. Nothing is configured by default; no endpoint, key or claim name is taken from the Sideloadly binary and no private service is contacted. Open: operator-supplied endpoints/key and dated live checks; wiring feature state into provider/option gating; the OAuth HTTP listener lives in the engine IPC server. Server behavior/availability unknown. | Operator-supplied endpoints and dated live checks. [SERVICES.md](SERVICES.md), [reconstruction §13](../../SIDELOADLY_DECONSTRUCTED.md). |
-| Apple Silicon | Done with fixtures: Mac as a device (provisioning UDID, computer name), Apple ID provisioning, folder output, recovered wrapper conversion and `/Applications` placement rules. Open: launch verification with an Apple-issued identity; Mac-specific entitlement adjustments. | Native launch verification. [DEVICE.md](DEVICE.md), [reconstruction §8.3](../../SIDELOADLY_DECONSTRUCTED.md). |
-| Bundle features | Done with fixtures: `.deb`/`ar` injection inputs (gz/xz/lzma/bz2/zst) with the recovered selection and escape rejection; `http(s)://` and `///special/{substrate,substitute,spoofer}` resolution through configurable endpoints (wiremock); custom loose-PNG icon replacement resized to each declared size (Info.plist untouched, Assets.car refused as recovered); substrate/UnityFramework/rpath rewrites and the "headers do not fit" failure; the recovered `%%<n>`/`.filenames_mangled` indirection as a tested utility; folder output; identity-signed entitlement overrides. Open: `Assets.car` icon editing (intentionally not done); wiring mangling into unpack/pack; real tweak packages, live special hosts and native execution of injected binaries on a device. | Real tweak packages, live special-host and native icon/injection checks, and cross-platform round-trips. [BUNDLE.md](BUNDLE.md), [ACQUIRE.md](ACQUIRE.md), [BUNDLE_NOTES](../../notes/BUNDLE_NOTES.md). |
-| Throughput/consistency | ZIP-to-AFC streaming with backpressure/resume, bounded event queue, finer cancellation in sealing/signing, input TOCTOU detection, cross-process settings coordination. | Byte-identical ZIP/ZIP64 suffixes, fault injection, peak RSS, throughput and cancellation latency. [BUNDLE.md](BUNDLE.md), [ENGINE.md](ENGINE.md). |
-| GPUI/CLI | Account/2FA/team, certificate/App ID/device controls, install/progress/refresh, Store/URI and feature settings. Full accessibility and Linux/Windows runtime remain unverified. Current UI/CLI cover inspection/local export; CLI also checks remote anisette. | Rendered interaction, keyboard/accessibility, native package and account/device flows. [UI.md](UI.md), [ENGINE.md](ENGINE.md). |
+| Account/session | GSA SRP sign-in with 2FA prompts; sessions, remembered passwords and the signing key in the keychain (or a 0600 file); restart restore; recovered `sessions.json` import; 1100 renewal; AOSKit local anisette with per-job fallback to the alternate provider (AOSKit refused requests on this Mac, -45070); default-team API. Fixtures and independent vectors ([APPLE.md](APPLE.md)). | Live sign-in. Mail plug-in anisette and legacy IDMS are not implemented (scope decisions below). |
+| Key/certificates, portal provisioning | Durable key and machine UUID, CSR, reuse by public key, confirmed 7460 revocation; device registration, App IDs with free quota, recovered bundle-ID policy, tvOS and per-extension options, trust-verified profiles. Stateful fake portal. | Live portal confirmation. |
+| Signing | Child-before-parent signing in original/unsigned/ad-hoc/Apple ID modes; profile preflight with trust; Apple `codesign`/OpenSSL interoperability; cancellation polled per resource, 128 KiB and page (1.4–4.4 ms measured); jobs fail when an input changes during them. | Stock-device acceptance. |
+| Device transport/install | usbmuxd discovery/watch (USB and Wi-Fi), lockdown, pairing, resumable AFC staging, installation proxy, recovered retry policy, ZIP streaming with backpressure; device jobs record installations; the reconnect prompt names the device and is withdrawn when the device returns. Fault-injection fixtures; read-only USB probe. | Physical installation; Wi-Fi install; tvOS PIN pairing (no `idevice` CU-pairing API). |
+| Device utilities | Apps, profiles, pairing, syslog (real device read); Developer Disk Images (recovered mirrors, cache, `major.minor` fallback, already-mounted check before any download, legacy and personalized iOS 17+ with a TSS client); JIT over the recovered lockdown debugserver; pairing repair; heartbeat; notifications; CLI and desktop controls; demo simulations. Fake device and wiremock. | Physical DDI mount, JIT and pairing repair; iOS 17+ RSD debugserver (beyond the recovered client). |
+| Refresh, daemon, IPC | SQLite state; refresh replay; scheduler with cross-process claims, crash takeover after 1 h and future-dated claims after a clock change (store fixtures and a killed-process test); autostart LaunchAgent/XDG entry; `sideport-tray` menu-bar daemon with the recovered labels and actions; the recovered local IPC (`/raise`, `/restart`, `/enqueue`, `/tokens`, `/poll`) on 127.0.0.1:28811 with a loopback token; single-instance hand-over; settings shared across processes. | Opening the tray menu by pointer. |
+| Acquisition | `sideloadly:` links, resumable downloads, hash checks, flipped storage, `EnrichIpa`; links as CLI/desktop sources; the packaged app registers the `sideloadly` scheme and IPA documents. | Live link sources. The App Store client is excluded (below). |
+| Private services | `sl-services`: BSDIFF40 bspatch, a configurable update client, an RS256 feature-token verifier; the IPC `/tokens` route delivers a token that is verified end to end. No endpoints or keys configured; options are not gated ([SERVICES.md](SERVICES.md)). | Operator-supplied endpoints and key; live checks. |
+| Apple Silicon | This Mac as a device, provisioning, recovered wrapper conversion and placement. | Launch verification with an Apple-issued identity; Mac-specific entitlement adjustments. |
+| Bundle features | `.deb`/`ar` injection, URL and special sources, substrate rewrites, loose-PNG icon replacement, the filename-mangling utility, folder output ([BUNDLE.md](BUNDLE.md)). | Real tweak packages, live special hosts, native execution of injected binaries on a device. |
+| Throughput/consistency | Bounded job events (4096 lossy backlog; stages, facts and prompts always delivered); prompt withdrawal; input change detection; cross-process settings; cancellation latency; one throughput/peak-RSS measurement (466 MiB app: 9.3 s, 27.7 MB, [ENGINE.md](ENGINE.md)). | Peak memory for large Mach-O binaries, which signing holds whole. |
+| GPUI/CLI | CLI for every engine workflow; desktop App, Accounts, Devices, Installations and Settings sections covering the workflows above ([UI.md](UI.md)). | Native look at the newer sections (screen capture is not available in this environment); full accessibility; desktop on Linux/Windows. |
+| Platforms | macOS (Apple Silicon) development and tests. Non-desktop suite on x86_64 Linux without network access (`scripts/test-linux.sh`). Engine, CLI and tray cross-build for Windows (GNU). | Windows runtime; desktop app on Linux/Windows. |
 
 Broader malformed-format and real-input coverage remains open for Mach-O, CMS, archives and
-CgBI PNGs. Existing generated fixtures, Apple `codesign`, OpenSSL and archive readers establish
-their tested cases only. Inspection does not check CRCs of unvisited ZIP payloads. Current
-source, test and limits are detailed in [ARCHITECTURE.md](ARCHITECTURE.md),
-[BUNDLE.md](BUNDLE.md) and [ENGINE.md](ENGINE.md).
+CgBI PNGs; generated fixtures, Apple `codesign`, OpenSSL and archive readers establish their tested
+cases only.
+
+## Scope decisions
+
+- **App Store client, kbsync and FairPlay downloads: excluded.** The recovered Store client
+  impersonates Apple's iTunes client, authenticates with kbsync client-attestation tokens produced
+  through the Mail plug-in, and downloads FairPlay-protected packages with their decryption
+  metadata. Sideport refuses App Store deeplinks as unsupported ([ACQUIRE.md](ACQUIRE.md)).
+- **Mail/AltServer plug-in anisette, anisette mode 1 and legacy IDMS: not implemented.** Both
+  implementation attempts in this pass were declined before any code was written, and the work was
+  not pursued another way. The recovered client itself refuses the plug-in on macOS 14 and later
+  (this Mac runs macOS 27); recovered IDMS sessions are reported as skipped on import. Any further
+  work here needs a maintainer decision on scope.
+- **Private services are modelled, not contacted.** No endpoint, key or claim name was taken from
+  the Sideloadly binary, and Sideport does not gate options on feature state.
+- **Kept as documented deviations:** filename mangling is a tested utility that unpack/pack do not
+  use (names stay original end to end); `Assets.car` icons are not rewritten (refused, as
+  recovered); tvOS PIN pairing and the iOS 17+ RSD debugserver are not implemented.
+
+## Verification that needs the maintainer
+
+These steps change a physical device or use a real Apple account, so none was attempted:
+
+1. An Apple ID install onto the attached iPhone with an authorized account, then a refresh.
+2. Mounting a Developer Disk Image, enabling JIT and repairing pairing on that iPhone.
+3. Live Apple ID sign-in and provisioning, with a dated record.
+4. Live `sideloadly:` link and special-source hosts.
+5. A native look at the Devices, Settings and editor additions, and opening the tray menu.
+
+## Gates at this snapshot
+
+- `scripts/cargo-ui.sh test --workspace`: 325 passed, 0 failed, 6 ignored. Per crate: sl-macho 10,
+  sl-codesign 41, sl-bundle 49, sl-apple 35, sl-device 28, sl-acquire 20, sl-services 20,
+  sl-macos 1, sl-engine 73, sl-cli 10, sl-tray 2, sl-app 36.
+- `scripts/test-linux.sh`: 279 passed, 0 failed, 3 ignored (x86_64 Debian, no network).
+- Strict Clippy (`--workspace --all-targets -D warnings`), `fmt --check` and `git diff --check`
+  pass. Clippy reports only a future-incompatibility note for third-party `block` and
+  `proc-macro-error2`.
 
 ## Dependency order
 
-1. Persist account/session/key state and establish certificate ownership across restarts.
-2. Complete team/device/App ID/profile policy and connect it to identity signing, including
-   nested bundles and entitlement authorization.
-3. Implement device transport, streaming upload and installation; test partial writes and
-   reconnects before physical-device acceptance.
-4. Expose account/sign/install in GPUI and CLI; integrate installation state and refresh.
+1. Persist account/session/key state and establish certificate ownership across restarts. Done.
+2. Complete team/device/App ID/profile policy and connect it to identity signing. Done with
+   fixtures.
+3. Implement device transport, streaming upload and installation. Done with fixtures; physical
+   acceptance open.
+4. Expose account/sign/install in GPUI and CLI; integrate installation state and refresh. Done.
 5. Complete acquisition channels, Apple Silicon conversion, device utilities and private
-   integrations. Verify current external availability separately from recovered behavior.
+   integrations. Done within the scope decisions above; external availability unverified.
 
 Every architecture-ledger row remains in scope. A row requires implementation and its
 fixture/native/live evidence before its completion status changes.
 
-All subsequent code changes follow the repository-wide layout contract in
-[AGENTS.md](../AGENTS.md) and [STYLE.md](STYLE.md): separate logical stages visibly, group
-related encoding operations, and review readability after automatic formatting. This applies
-to every language, crate, test, example and script, not only the requirements encoder.
+All code changes follow the repository-wide layout contract in [AGENTS.md](../AGENTS.md) and
+[STYLE.md](STYLE.md): separate logical stages visibly, group related encoding operations, and
+review readability after automatic formatting.
 
 ## Assumption register
 
 | ID | Assumption; dependent result | Stress test / falsification probe |
 |---|---|---|
-| H1 | Recovered artifacts reflect Sideloadly 0.60 behavior; parity claims depend on this. | Compare [reconstruction](../../SIDELOADLY_DECONSTRUCTED.md), [notes](../../notes/AUTH_NOTES.md) and recovered control flow; record contradictions. |
+| H1 | Recovered artifacts reflect Sideloadly 0.60 behavior; parity claims depend on this. | Compare [reconstruction](../../SIDELOADLY_DECONSTRUCTED.md), [notes](../../notes/AUTH_NOTES.md) and recovered control flow; literals read from the installed binary by address (IPC and tray strings) agree with the decompiled control flow. |
 | H2 | Recovered Apple/private endpoints may still accept the protocol; live-workflow claims depend on this. Current state: **unknown**. | Controlled fixtures followed by authorized, dated live requests. |
-| H3 | Decoded profile fields represent authentic Apple-issued contents; trust claims depend on this. The parser does not establish it; `verify_trust` does for the Apple chain/name policy, when requested. | Generated tamper/policy fixtures and three local Apple profiles pass; revocation and on-device policy are not checked. |
-| H4 | Prefix, wildcard and UDID handling cover target profiles; selection/device-match claims depend on this. | Legacy prefix ≠ Team ID, absent prefix, exact/wildcard boundaries, mixed-case/hyphenated UDIDs and real samples; compare [TN2318](https://developer.apple.com/library/archive/technotes/tn2318/) and [TN3125](https://developer.apple.com/documentation/technotes/tn3125-inside-code-signing-provisioning-profiles). |
-| H5 | Inputs and external replacements remain stable during a job; fidelity/path/determinism claims depend on this. | Mutate same-size inputs and symlinks mid-job; snapshot or reject changed content/metadata. |
+| H3 | Decoded profile fields represent authentic Apple-issued contents; trust claims depend on this. | Generated tamper/policy fixtures and three local Apple profiles pass; revocation and on-device policy are not checked. |
+| H4 | Prefix, wildcard and UDID handling cover target profiles; selection/device-match claims depend on this. | Boundary fixtures and real samples; compare [TN2318](https://developer.apple.com/library/archive/technotes/tn2318/) and [TN3125](https://developer.apple.com/documentation/technotes/tn3125-inside-code-signing-provisioning-profiles). |
+| H5 | Inputs and external replacements remain stable during a job, or a change is detected; fidelity claims depend on this. | Identity snapshots fail jobs on same-size rewrites, additions, removals and symlink retargets (fixtures and a mid-job rewrite). A writer restoring both file times is not detected. |
 | H6 | Generated fixtures predict corresponding real-input behavior; signing/format claims depend on this. | Independent real IPA/profile samples, native tamper checks and physical installation. |
-| H7 | One process writes settings and event consumers drain jobs; consistency/memory claims depend on this. | Concurrent writers, stalled-consumer long job, clock changes and crash/restart tests. |
+| H7 | Processes sharing a data directory coordinate through the database lock, and front ends tolerate lossy log lines; consistency/memory claims depend on this. | Concurrent `sideport` processes, two engines on one directory, a killed claimant, clock shifts, and a stalled event receiver are tested. |
 
-Additional component assumptions and probes are in [APPLE.md](APPLE.md),
-[BUNDLE.md](BUNDLE.md), [ENGINE.md](ENGINE.md) and [UI.md](UI.md).
+Additional component assumptions and probes are in [APPLE.md](APPLE.md), [BUNDLE.md](BUNDLE.md),
+[ENGINE.md](ENGINE.md), [DEVICE.md](DEVICE.md), [SERVICES.md](SERVICES.md) and [UI.md](UI.md).
 
 ## Bounded observations
 
-- **High impact:** Decoded-field preflight alone cannot establish authenticity; signing verifies
-  CMS trust only when requested. Apple ID engine integration and device transport block
-  stock-device installation evidence.
-- **High impact:** Mock portal/private-service success cannot establish current external
+- **High impact:** No physical-device installation or live Apple account has been exercised;
+  fixture and native-signature evidence does not establish stock-device acceptance.
+- **High impact:** Mock portal and private-service success cannot establish current external
   availability; that status remains unknown until a dated live check.
-- **Medium impact:** Child-profile selection, legacy prefixes and target-device matching can
-  fail independently of a valid main-app signature.
-- **Medium impact:** Unbounded events, whole-binary signing and source TOCTOU affect memory or
-  consistency beyond the small-fixture evidence.
-- **Low impact:** Document test counts and grouped code layout can drift after edits; derive
-  counts from current test output and inspect source after formatting.
+- **Medium impact:** Child-profile selection, legacy prefixes and target-device matching can fail
+  independently of a valid main-app signature.
+- **Medium impact:** Signing holds each Mach-O binary whole, so peak memory follows the largest
+  binary; resources are streamed.
+- **Low impact:** Test counts and grouped layout can drift after edits; derive counts from current
+  test output and inspect source after formatting.
 
 ## Handover quality gates
 
 QG1: This document reports implementation facts and verification status without a normative
-judgment. QG2: H1–H7 include dependent results and probes. QG3: Known architecture-ledger
-workstreams are accounted for; unknown service behavior remains marked unknown. QG4: No new
-numerical derivation is asserted here; units/limits remain in component documents. QG5:
-Uncommitted work, stale documentation and unresolved trust/device cases are explicit. QG6:
-Local source/tests, recovered artifacts and linked Apple documents define provenance. QG7:
-High/medium/low observations are recorded. These are handover checks; the **project**
-completion gates remain open.
+judgment. QG2: H1–H7 include dependent results and probes. QG3: Every architecture-ledger
+workstream is accounted for, including the excluded and not-implemented parts; unknown service
+behavior remains marked unknown. QG4: Numerical results (latency, throughput, memory) are stated
+with their conditions in the component documents. QG5: Unperformed device and account
+verification is explicit. QG6: Local source/tests, recovered artifacts and linked Apple documents
+define provenance. QG7: High/medium/low observations are recorded. These are handover checks; the
+**project** completion gates remain open wherever the ledger requires live or physical evidence.

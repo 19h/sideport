@@ -173,9 +173,11 @@ UI.md records its implementation, primary sources, and rendered evidence.
 
 ## Verification and assumptions
 
-The five-crate suite currently has 125 tests: sl-bundle 27, sl-codesign 39, sl-macho 10,
-sl-engine 42, and sl-cli 7. The full workspace also runs sl-apple 33, sl-device 13 and sl-app 8,
-for 179, plus three ignored local probes. The engine authentication/portal and CLI anisette tests are
+`scripts/cargo-ui.sh test --workspace` runs 325 tests on macOS with 6 ignored local probes
+(2026-09-28): sl-macho 10, sl-codesign 41, sl-bundle 49, sl-apple 35, sl-device 28,
+sl-acquire 20, sl-services 20, sl-macos 1, sl-engine 73, sl-cli 10, sl-tray 2 and sl-app 36.
+`scripts/test-linux.sh` runs the non-desktop suite on x86_64 Linux without network access: 279
+passed, 3 ignored. The engine authentication/portal and CLI anisette tests are
 described in APPLE.md. Native generated universal code is exported through the real engine,
 accepted by Apple's codesign with strict/deep/all-architecture verification, and executes.
 Info.plist tampering is rejected. CLI subprocess tests cover metadata/export JSON and SIGINT
