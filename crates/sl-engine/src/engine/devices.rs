@@ -344,6 +344,19 @@ pub(crate) async fn mount_developer_image(
     let values = backend.values(udid).await.map_err(device_error)?;
     let personalized = sl_device::ddi::is_personalized(&values.product_version);
 
+    // A mounted image needs no download. The service connection is not kept open while
+    // downloading; the mount below opens a new one.
+    let already_mounted = {
+        let mut mounter = backend.image_mounter(udid).await.map_err(device_error)?;
+        mounter.mounted().await.map_err(device_error)?.is_some()
+    };
+
+    if already_mounted {
+        context.info("A developer image is already mounted");
+
+        return Ok(DdiMount { already_mounted: true, personalized });
+    }
+
     let store = sl_device::Store::new(inner.data_dir.join("developer-disk-images"));
     let catalog = inner.ddi.catalog();
 

@@ -23,6 +23,14 @@ fn engine(device: &FakeDevice, data_dir: std::path::PathBuf, ddi: DdiConfig) -> 
     Engine::new(config).expect("engine")
 }
 
+/// Endpoints on a closed local port: a test that should not download fails instead of reaching
+/// the real mirrors.
+fn offline() -> DdiConfig {
+    let closed = "http://127.0.0.1:9".to_string();
+
+    DdiConfig { github_api: Some(closed.clone()), raw_content: Some(closed.clone()), tss_endpoint: Some(closed) }
+}
+
 /// Drain a job's result, ignoring events (prompts are never expected here).
 fn finish<T: Send + 'static>(job: JobHandle<T>) -> Result<T, sl_engine::EngineError> {
     let events = job.events();
@@ -89,7 +97,7 @@ async fn enabling_jit_mounts_then_launches_and_detaches() {
     }
 
     let temporary = tempfile::tempdir().expect("tempdir");
-    let engine = engine(&device, temporary.path().join("data"), DdiConfig::default());
+    let engine = engine(&device, temporary.path().join("data"), offline());
 
     finish(engine.enable_jit(UDID.into(), "com.example.app".into(), true)).expect("jit");
 
@@ -111,7 +119,7 @@ async fn enabling_jit_mounts_then_launches_and_detaches() {
 async fn repairing_pairing_unpairs_then_pairs_again() {
     let device = FakeDevice::iphone(UDID);
     let temporary = tempfile::tempdir().expect("tempdir");
-    let engine = engine(&device, temporary.path().join("data"), DdiConfig::default());
+    let engine = engine(&device, temporary.path().join("data"), offline());
 
     let job = engine.repair_pairing(UDID.into());
     let events = job.events();
