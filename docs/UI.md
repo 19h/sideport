@@ -104,9 +104,8 @@ and offers:
   the app list is read again. Unchecking it, choosing another device or closing the window drops
   the job, which cancels it; an unexpected end is reported.
 
-The desktop shows only the connection kind in the demo; this Mac also has no utilities. (The
-demo engine now answers these calls with simulations instead of reaching the system usbmuxd, so
-the controls could be enabled in the demo later.)
+In the demo the engine answers these calls with simulations (short progress, then the result)
+instead of reaching the system usbmuxd. This Mac has no utilities.
 
 Installations shows each tracked installation's icon, name, version, bundle identifier, device,
 Apple ID, team, remaining time (whole days, hours on the final day, "Expired N days ago" in the
@@ -200,7 +199,7 @@ not implement the open panel, so tests hand chosen paths to the completion the p
   click after Enter was ignored, and a refresh-failure notice; a two-team account's default team
   chosen and set to "Ask at next job" through the engine, no choice for a one-team account, and a
   refused choice after a sign-out elsewhere shown as an error; a Wi-Fi-only device's connection
-  kind shown, with no utility controls in the demo.
+  kind shown and a simulated disk-image mount completing in the demo.
 - Real engine (10): pairing an unpaired fake device through the rendered Pair button, then listing
   its apps and a generated signed profile, a confirmed uninstall and a cancelled then confirmed
   profile removal; guidance when no device is attached; guidance without an account and for

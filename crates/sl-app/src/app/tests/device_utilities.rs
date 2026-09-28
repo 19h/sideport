@@ -183,7 +183,7 @@ async fn device_utilities_mount_enable_jit_follow_app_changes_and_repair_pairing
 }
 
 #[gpui::test]
-async fn demo_devices_show_their_connection_and_offer_no_simulated_utilities(cx: &mut TestAppContext) {
+async fn demo_devices_show_their_connection_and_simulated_utilities(cx: &mut TestAppContext) {
     const WIFI_IPAD: &str = "00008103-000E4C1A0C38801E";
 
     let temporary = tempfile::tempdir().expect("tempdir");
@@ -198,8 +198,10 @@ async fn demo_devices_show_their_connection_and_offer_no_simulated_utilities(cx:
     until(&mut cx, &view, "iPad contents", listed_for_ipad).await;
 
     assert!(rendered(&mut cx, &format!("connection:{WIFI_IPAD}")));
-    assert!(!rendered(&mut cx, "mount-ddi"), "the demo does not simulate device utilities");
-    assert!(!rendered(&mut cx, "jit:com.example.fieldnotes.A1B2C3D4E5"));
+
+    click(&mut cx, "mount-ddi");
+    until(&mut cx, &view, "the simulated mount", |view| !view.busy).await;
+    assert!(logged(&view, &mut cx, "Mounted the developer image"), "the demo engine simulated the mount");
 
     let connections = cx.read(|cx| view.read(cx).selected_device().map(|device| device.connections.clone()));
     assert_eq!(connections.as_deref().map(crate::app::utilities::connection_label).as_deref(), Some("Wi-Fi"));

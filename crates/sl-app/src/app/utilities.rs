@@ -96,16 +96,10 @@ fn utility_row(title: &str, description: impl Into<SharedString>, cx: &App) -> D
 }
 
 impl Sideport {
-    /// Why the selected device offers no utilities: the demo simulates none, and this Mac is not
-    /// a lockdown device.
+    /// Why the selected device offers no utilities: this Mac is not a lockdown device. (The demo
+    /// engine simulates them.)
     pub(super) fn utilities_unavailable(&self, device: &DeviceInfo) -> Option<&'static str> {
-        if self.engine.is_demo() {
-            Some("Device utilities need a real device; the demo does not simulate them.")
-        } else if is_mac(device) {
-            Some("Device utilities apply to iPhone, iPad and Apple TV.")
-        } else {
-            None
-        }
+        is_mac(device).then_some("Device utilities apply to iPhone, iPad and Apple TV.")
     }
 
     /// Download (or reuse) and mount the Developer Disk Image in the job slot; stage events and
