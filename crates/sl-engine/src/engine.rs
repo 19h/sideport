@@ -55,6 +55,8 @@ pub struct EngineConfig {
     pub machine_anisette: Option<MachineAnisette>,
     /// This Mac as an install target (default: detected with the system device layer).
     pub mac_target: MacTargetSetting,
+    /// Login-item directory for autostart (default: the platform's LaunchAgents/autostart).
+    pub autostart_dir: Option<PathBuf>,
 }
 
 /// Notifications from the background refresh scheduler.
@@ -78,6 +80,7 @@ struct Inner {
     devices: devices::Devices,
     machine: Option<Arc<dyn sl_apple::anisette::MachineSource>>,
     mac_setting: MacTargetSetting,
+    autostart_dir: Option<PathBuf>,
     mac: std::sync::OnceLock<Option<MacTarget>>,
     /// Serializes signing-key creation within this process; the store serializes processes.
     key_lock: Mutex<()>,
@@ -205,6 +208,7 @@ impl Engine {
                     (setting, _) => setting.clone(),
                 },
                 mac: std::sync::OnceLock::new(),
+                autostart_dir: config.autostart_dir.or_else(crate::autostart::default_directory),
                 devices: devices::Devices::new(config.device_backend),
                 machine: config
                     .machine_anisette
@@ -246,6 +250,22 @@ impl Engine {
         *current = settings;
 
         Ok(())
+    }
+
+    /// Whether the refresh scheduler starts at login.
+    pub fn autostart(&self) -> bool {
+        self.inner.autostart_dir.as_deref().is_some_and(crate::autostart::is_enabled)
+    }
+
+    /// Start `<program> daemon` at login (LaunchAgent on macOS, XDG autostart on Linux).
+    pub fn set_autostart(&self, enabled: bool, program: &std::path::Path) -> Result<()> {
+        let directory = self
+            .inner
+            .autostart_dir
+            .as_deref()
+            .ok_or_else(|| EngineError::Unsupported("autostart is not supported on this platform".into()))?;
+
+        crate::autostart::set(directory, program, Some(&self.inner.data_dir), enabled)
     }
 
     /// Fetch anisette with the given setting and describe the machine Apple will see.

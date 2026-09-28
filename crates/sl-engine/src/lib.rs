@@ -3,6 +3,7 @@
 //! Front-ends create one [`Engine`], call its methods, and consume [`JobHandle`]s. See
 //! `docs/ARCHITECTURE.md` for the runtime model.
 
+pub mod autostart;
 mod demo;
 mod engine;
 pub mod error;

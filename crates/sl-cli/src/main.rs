@@ -171,6 +171,13 @@ enum SettingsCommand {
         #[arg(long)]
         none: bool,
     },
+    /// Run the refresh scheduler (`sideport daemon`) at login.
+    Autostart {
+        #[arg(long, conflicts_with = "disable")]
+        enable: bool,
+        #[arg(long)]
+        disable: bool,
+    },
     Refresh {
         #[arg(long)]
         enabled: Option<bool>,

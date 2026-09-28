@@ -240,6 +240,19 @@ fn settings(engine: &Engine, command: SettingsCommand, json: bool) -> Result<()>
             };
         }
 
+        SettingsCommand::Autostart { enable, disable } => {
+            if enable || disable {
+                let program = std::env::current_exe().context("locate the sideport executable")?;
+                engine.set_autostart(enable, &program)?;
+            }
+
+            let enabled = engine.autostart();
+
+            return print(&serde_json::json!({ "autostart": enabled }), json, |_| {
+                println!("Autostart {}", if enabled { "enabled" } else { "disabled" });
+            });
+        }
+
         SettingsCommand::Refresh { enabled, threshold_hours, interval_minutes, allow_network } => {
             let refresh = &mut settings.refresh;
 
