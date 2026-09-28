@@ -8,7 +8,7 @@ engineering. The full rewrite is in progress. The requirement-by-requirement evi
 The engine inspects IPA, flipped IPA, zipped-app and app-directory inputs, edits metadata,
 removes extensions, injects local, remote, special and `.deb` tweaks, replaces files and icons,
 and signs children before parents in original, unsigned, ad-hoc or Apple ID mode. Apple ID
-signing signs in through GrandSlam (with AOSKit or remote anisette), provisions the team,
+signing signs in through GrandSlam (with local AOSKit or in-process ADI anisette), provisions the team,
 certificate, device, App IDs and trust-verified profiles, and exports an IPA or installs it. The
 device layer discovers devices through usbmuxd and installs with the recovered resumable upload
 and retry policy, mounts Developer Disk Images, enables JIT, repairs pairing, lists and removes
@@ -49,7 +49,7 @@ sideport export MyApp.ipa --output Prepared.ipa --signing ad-hoc \
 sideport export MyApp.ipa --output Unsigned.ipa --signing unsigned \
     --remove-extension Widget.appex --inject ./libExample.dylib
 
-sideport settings anisette --remote https://anisette.example
+sideport anisette --local
 sideport account login jane@example.com --remember
 sideport account import            # Sideloadly's sessions.json
 sideport devices

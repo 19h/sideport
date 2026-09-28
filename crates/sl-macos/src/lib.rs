@@ -1,18 +1,22 @@
-//! macOS integration: local anisette through AOSKit and the Mac's identity.
+//! macOS integration: local anisette through AOSKit or in-process ADI, and the Mac's identity.
 //!
-//! Only [`aoskit`] uses `unsafe` (Objective-C messages to a private framework). Everything else
-//! reads documented system tools and files. On other platforms every function reports
+//! [`aoskit`] and [`mobile_gestalt`] use `unsafe` to call Apple private frameworks. On other platforms every function reports
 //! [`Error::Unsupported`].
 
 #[cfg(target_os = "macos")]
 mod aoskit;
+#[cfg(target_os = "macos")]
+mod in_process_anisette;
+#[cfg(target_os = "macos")]
+mod mobile_gestalt;
 mod system;
 
 pub use system::{computer_name, hardware_model, os_version, provisioning_udid};
 
+use chrono::Utc;
 use futures::FutureExt;
 use futures::future::BoxFuture;
-use sl_apple::anisette::{MachineSource, MachineValues};
+use sl_apple::anisette::{AnisetteHeaders, MachineSource, MachineValues, machine_headers};
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum Error {
@@ -56,6 +60,39 @@ impl MachineSource for AosKitSource {
                 Error::AosFailed(_) => sl_apple::Error::Invalid("AOSKit returned no one-time password"),
                 Error::System(_) => sl_apple::Error::Invalid("system identity is unavailable"),
             })
+        }
+        .boxed()
+    }
+
+    fn headers(&self) -> BoxFuture<'_, sl_apple::Result<AnisetteHeaders>> {
+        async {
+            #[cfg(target_os = "macos")]
+            if os_version()
+                .ok()
+                .and_then(|(version, _)| version.split('.').next()?.parse::<u32>().ok())
+                .is_some_and(|major| major >= 26)
+            {
+                return in_process_anisette::headers()
+                    .await
+                    .map_err(|error| sl_apple::Error::LocalAnisette(error.to_string()));
+            }
+
+            let aoskit = self.values().await.and_then(|values| machine_headers(&values, Utc::now()));
+
+            #[cfg(target_os = "macos")]
+            {
+                match aoskit {
+                    Ok(headers) => Ok(headers),
+                    Err(aoskit_error) => in_process_anisette::headers().await.map_err(|bridge_error| {
+                        sl_apple::Error::LocalAnisette(format!(
+                            "AOSKit: {aoskit_error}; in-process ADI: {bridge_error}"
+                        ))
+                    }),
+                }
+            }
+
+            #[cfg(not(target_os = "macos"))]
+            aoskit
         }
         .boxed()
     }

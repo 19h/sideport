@@ -24,6 +24,8 @@ pub enum Error {
     RetryLimit(&'static str),
     #[error("authentication worker failed")]
     Worker,
+    #[error("local anisette failed: {0}")]
+    LocalAnisette(String),
 }
 
 impl From<reqwest::Error> for Error {

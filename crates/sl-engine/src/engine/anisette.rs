@@ -75,9 +75,9 @@ pub(super) async fn primary(inner: &Inner, context: Option<&JobContext>) -> Resu
             provider(inner, alternate)
         }
 
-        (Err(error), None) => Err(EngineError::Anisette(format!(
-            "local anisette is unavailable on this computer ({error}); configure a remote anisette provider"
-        ))),
+        (Err(error), None) => {
+            Err(EngineError::Anisette(format!("local anisette is unavailable on this computer ({error})")))
+        }
     }
 }
 
@@ -221,6 +221,9 @@ mod tests {
         let without = engine(second.path(), false, None);
         let error = primary(&without.inner, None).await.expect_err("no fallback");
 
-        assert!(matches!(&error, EngineError::Anisette(message) if message.contains("remote anisette")), "{error}");
+        assert!(
+            matches!(&error, EngineError::Anisette(message) if message.contains("local anisette is unavailable")),
+            "{error}"
+        );
     }
 }

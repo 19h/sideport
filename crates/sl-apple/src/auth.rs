@@ -252,8 +252,8 @@ impl AuthClient {
         let complete = wire::dict(&response.0)?;
         let verified = proof.verify(wire::data(complete, "M2")?)?;
         let context = match complete.get("sc") {
-            Some(Value::Data(context)) => context.as_slice(),
-            None => &[],
+            Some(Value::Data(context)) => Some(context.as_slice()),
+            None => None,
             _ => return Err(Error::Invalid("negotiation context")),
         };
         let data = verified.decrypt_session_data(wire::data(complete, "spd")?, context, wire::data(complete, "np")?)?;

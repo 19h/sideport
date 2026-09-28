@@ -1,0 +1,14 @@
+{
+  "originHash" : "2a36eea9e1ba76137b1bb06af13e31c6100354df6da3bb6e55a32ef0e57396ff",
+  "pins" : [
+    {
+      "identity" : "anisettekit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/altstoreio/AnisetteKit.git",
+      "state" : {
+        "revision" : "1f5a7e36553cc865b873f222b87a6486c0bcc7bf"
+      }
+    }
+  ],
+  "version" : 3
+}

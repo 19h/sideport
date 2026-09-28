@@ -21,6 +21,8 @@ pub const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 const CLIENT_TIME: &str = "X-Apple-I-Client-Time";
 const REQUIRED_HEADERS: [&str; 5] =
     ["X-Apple-I-MD", "X-Apple-I-MD-M", "X-Mme-Device-Id", "X-MMe-Client-Info", "X-Apple-Locale"];
+const BLOCKED_CLIENT: &str = "com.apple.dt.Xcode/";
+const AUTHKIT_CLIENT: &str = "com.apple.akd/1.0";
 
 #[derive(Clone)]
 pub struct AnisetteHeaders {
@@ -41,7 +43,7 @@ impl Drop for AnisetteHeaders {
 
 impl AnisetteHeaders {
     pub fn new(values: BTreeMap<String, String>) -> Result<Self> {
-        let headers = Self { values };
+        let mut headers = Self { values };
 
         if headers.values.len() > 128 {
             return Err(Error::Invalid("anisette header count"));
@@ -70,6 +72,15 @@ impl AnisetteHeaders {
             }
         }
 
+        for (name, value) in &mut headers.values {
+            if name.eq_ignore_ascii_case("X-MMe-Client-Info") {
+                if let Some(normalized) = normalize_client_info(value) {
+                    value.zeroize();
+                    *value = normalized;
+                }
+            }
+        }
+
         Ok(headers)
     }
 
@@ -95,6 +106,19 @@ impl AnisetteHeaders {
         self.values.retain(|name, _| !name.eq_ignore_ascii_case(CLIENT_TIME));
         self.values.insert(CLIENT_TIME.into(), time.format("%Y-%m-%dT%H:%M:%SZ").to_string());
     }
+}
+
+fn normalize_client_info(value: &str) -> Option<String> {
+    let (prefix, remainder) = value.split_once(BLOCKED_CLIENT)?;
+    let version_length = remainder.bytes().take_while(|byte| byte.is_ascii_digit() || *byte == b'.').count();
+
+    if version_length == 0 || !remainder.as_bytes()[..version_length].iter().any(u8::is_ascii_digit) {
+        return None;
+    }
+
+    let suffix = &remainder[version_length..];
+
+    Some(format!("{prefix}{AUTHKIT_CLIENT}{suffix}"))
 }
 
 pub fn login_hash(username: &str) -> String {

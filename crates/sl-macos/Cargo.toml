@@ -1,6 +1,6 @@
 [package]
 name = "sl-macos"
-description = "macOS integration: AOSKit local anisette, Mac provisioning UDID and system identity"
+description = "macOS integration: in-process local anisette, Mac provisioning UDID and system identity"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,13 +12,19 @@ sl-apple.workspace = true
 thiserror.workspace = true
 futures.workspace = true
 plist.workspace = true
-serde_json.workspace = true
 tokio.workspace = true
 zeroize.workspace = true
+chrono.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+zip.workspace = true
+tempfile.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2.workspace = true
 objc2-foundation.workspace = true
+libloading.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "rt-multi-thread", "macros"] }

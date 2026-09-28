@@ -98,8 +98,8 @@ about eight seconds through the CLI (count only recorded).
 ## Apple Silicon Mac
 
 On Apple Silicon the device list includes this Mac (`device_class` `Mac`, model name "This
-Mac") with the provisioning UDID System Information reports; the recovered `get_m1_udid` helper
-reads the same value through MobileGestalt. A device job for that UDID requires Apple ID
+Mac") with the provisioning UDID read directly through MobileGestalt, as the recovered
+`get_m1_udid` helper does. System Information reports the same value. A device job for that UDID requires Apple ID
 signing. Provisioning registers the Mac as a device and, as the recovered client does for Apple
 Silicon, mangles free-team identifiers regardless of OS version. The signed app is written as
 `<tmp>/sideport-m1-<uuid>/Payload/<App>.app`, then converted (recovered `m1ConvertAndInstall`):

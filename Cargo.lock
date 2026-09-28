@@ -6455,6 +6455,7 @@ dependencies = [
  "cookie",
  "cookie_store",
  "futures-core",
+ "futures-util",
  "h2",
  "http",
  "http-body",
@@ -6476,12 +6477,14 @@ dependencies = [
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
+ "tokio-util",
  "tower",
  "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-streams",
  "web-sys",
 ]
 
@@ -7532,15 +7535,21 @@ dependencies = [
 name = "sl-macos"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "futures",
+ "libloading 0.8.9",
  "objc2 0.6.4",
  "objc2-foundation 0.3.2",
  "plist",
+ "reqwest",
  "serde_json",
  "sl-apple",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "uuid",
  "zeroize",
+ "zip",
 ]
 
 [[package]]

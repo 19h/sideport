@@ -1,4 +1,4 @@
-//! The Mac's identity from documented tools and files.
+//! The Mac's identity from system tools, files and MobileGestalt.
 
 use crate::{Error, Result};
 use std::process::Command;
@@ -58,56 +58,18 @@ pub fn os_version() -> Result<(String, String)> {
     Ok((text("ProductVersion")?, text("ProductBuildVersion")?))
 }
 
-/// The Apple Silicon provisioning UDID used to register the Mac as a device. The recovered
-/// `get_m1_udid` helper reads `MGCopyAnswer("ProvisioningUniqueDeviceID")`; System Information
-/// reports the same value as `provisioning_UDID`.
+/// The Apple Silicon provisioning UDID used to register the Mac as a device. Matches the
+/// recovered `get_m1_udid` call to `MGCopyAnswer("ProvisioningUniqueDeviceID")`.
 pub fn provisioning_udid() -> Result<String> {
-    if !cfg!(target_os = "macos") {
-        return Err(Error::Unsupported);
+    #[cfg(target_os = "macos")]
+    {
+        crate::mobile_gestalt::provisioning_udid()
     }
 
-    let output = Command::new("/usr/sbin/system_profiler")
-        .args(["SPHardwareDataType", "-json"])
-        .output()
-        .map_err(system_error)?;
-
-    if !output.status.success() {
-        return Err(Error::System("system_profiler failed".into()));
-    }
-
-    parse_provisioning_udid(&output.stdout)
-}
-
-pub(crate) fn parse_provisioning_udid(json: &[u8]) -> Result<String> {
-    let value: serde_json::Value = serde_json::from_slice(json).map_err(|error| Error::System(error.to_string()))?;
-
-    let udid = value["SPHardwareDataType"][0]["provisioning_UDID"]
-        .as_str()
-        .filter(|udid| {
-            !udid.is_empty() && udid.chars().all(|character| character.is_ascii_hexdigit() || character == '-')
-        })
-        .ok_or_else(|| Error::System("no provisioning UDID (Intel Macs have none)".into()))?;
-
-    Ok(udid.to_owned())
+    #[cfg(not(target_os = "macos"))]
+    Err(Error::Unsupported)
 }
 
 fn system_error(error: std::io::Error) -> Error {
     Error::System(error.to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn provisioning_udid_parsing_accepts_hexadecimal_and_rejects_absence() {
-        let apple_silicon = br#"{"SPHardwareDataType":[{"provisioning_UDID":"00006041-001A2B3C4D5E6F70"}]}"#;
-        assert_eq!(parse_provisioning_udid(apple_silicon).expect("UDID"), "00006041-001A2B3C4D5E6F70");
-
-        for json in
-            [&br#"{"SPHardwareDataType":[{}]}"#[..], br#"{"SPHardwareDataType":[{"provisioning_UDID":"x y"}]}"#, b"[]"]
-        {
-            assert!(parse_provisioning_udid(json).is_err());
-        }
-    }
 }

@@ -59,16 +59,29 @@ impl AuthClient {
         let mut using_phone = unlock == "secondaryAuth";
         let mut metadata = session_metadata(&data)?;
 
-        if data.additional_data("canHaveCustodian").is_none() {
-            let bootstrap = self.factor_request(Method::GET, "auth", headers.clone())?;
-            self.response_body(bootstrap, cancellation).await?;
-            let path = if using_phone { "auth/verify/phone" } else { "auth/verify/trusteddevice" };
-            let request = self.factor_request(Method::GET, path, headers.clone())?;
+        let mut json_headers = headers.clone();
+        insert_header(&mut json_headers, "Accept", "application/json")?;
+        let bootstrap = self.factor_request(Method::GET, "auth", json_headers.clone())?;
+
+        match self.factor_json(bootstrap, cancellation).await {
+            Ok(response) => merge_metadata(&mut metadata.0, &response.0)?,
+            Err(Error::HttpStatus(403)) if !using_phone => {}
+            Err(error) => return Err(error),
+        }
+
+        if metadata.0.get("noTrustedDevices").and_then(Json::as_bool) == Some(true) {
+            using_phone = true;
+        }
+
+        if !using_phone {
+            let request = self.factor_request(Method::GET, "auth/verify/trusteddevice", json_headers)?;
 
             match self.factor_json(request, cancellation).await {
-                Ok(response) => metadata = response,
-                Err(Error::HttpStatus(401 | 500)) if !using_phone => {
-                    metadata = self.sms(&headers, "1", None, cancellation).await?;
+                Ok(response) => merge_metadata(&mut metadata.0, &response.0)?,
+                Err(Error::HttpStatus(401 | 500)) => {
+                    let description = factor_description(&metadata.0, true)?;
+                    let response = self.sms(&headers, &description.phone_id, None, cancellation).await?;
+                    merge_metadata(&mut metadata.0, &response.0)?;
                     using_phone = true;
                 }
                 Err(error) => return Err(error),
@@ -168,23 +181,22 @@ impl AuthClient {
         code: Option<&str>,
         cancellation: &CancellationToken,
     ) -> Result<SecretJson> {
-        let mut body = dictionary([("serverInfo", dictionary([("phoneNumber.id", Value::String(phone_id.into()))]))]);
-        let path = if let Some(code) = code {
-            body.as_dictionary_mut()
-                .ok_or(Error::Invalid("SMS request dictionary"))?
-                .insert("securityCode.code".into(), Value::String(code.into()));
+        let phone_id = phone_id.parse::<u64>().map_err(|_| Error::Invalid("trusted phone identifier"))?;
+        let mut body = serde_json::json!({ "phoneNumber": { "id": phone_id }, "mode": "sms" });
 
-            "auth/verify/phone/securitycode?referrer=/auth/verify/phone/put"
+        let (method, path) = if let Some(code) = code {
+            body["securityCode"] = serde_json::json!({ "code": code });
+
+            (Method::POST, "auth/verify/phone/securitycode")
         } else {
-            "auth/verify/phone/put"
+            (Method::PUT, "auth/verify/phone")
         };
 
-        let body = SecretValue(body);
-        let mut encoded = wire::encode(&body.0)?;
+        let mut encoded = Zeroizing::new(serde_json::to_vec(&body).map_err(|_| Error::Invalid("SMS request JSON"))?);
         let mut headers = headers.clone();
-        insert_header(&mut headers, "Content-Type", "application/x-plist")?;
+        insert_header(&mut headers, "Content-Type", "application/json")?;
         insert_header(&mut headers, "Accept", "application/json")?;
-        let request = self.factor_request(Method::POST, path, headers)?.body(std::mem::take(&mut *encoded));
+        let request = self.factor_request(method, path, headers)?.body(std::mem::take(&mut *encoded));
 
         self.factor_json(request, cancellation).await
     }
@@ -232,13 +244,23 @@ impl AuthClient {
         cancellation: &CancellationToken,
     ) -> Result<SecretJson> {
         let body = self.response_body(request, cancellation).await?;
-        let response = SecretJson(serde_json::from_slice(&body).map_err(|_| Error::Invalid("second-factor JSON"))?);
+        let response = if body.is_empty() {
+            SecretJson(Json::Object(serde_json::Map::new()))
+        } else {
+            SecretJson(serde_json::from_slice(&body).map_err(|_| Error::Invalid("second-factor JSON"))?)
+        };
 
         if !response.0.is_object() {
             return Err(Error::Invalid("second-factor dictionary"));
         }
 
-        if let Some(errors) = response.0.get("serviceErrors") {
+        let errors = response
+            .0
+            .get("serviceErrors")
+            .or_else(|| response.0.get("service_errors"))
+            .or_else(|| response.0.get("validationErrors"));
+
+        if let Some(errors) = errors {
             let errors = errors.as_array().ok_or(Error::Invalid("second-factor service errors"))?;
 
             if let Some(error) = errors.first() {
@@ -320,7 +342,10 @@ fn factor_description(metadata: &Json, using_phone: bool) -> Result<FactorDescri
     }
 
     let phone = metadata
-        .get("phoneNumber")
+        .get("trustedPhoneNumbers")
+        .and_then(Json::as_array)
+        .and_then(|phones| phones.first())
+        .or_else(|| metadata.get("phoneNumber"))
         .or_else(|| metadata.get("trustedPhoneNumber"))
         .or_else(|| metadata.get("phoneNumberVerification")?.get("trustedPhoneNumber"))
         .or_else(|| metadata.get("additionalInfo")?.get("obfuscatedPhoneNumbers")?.as_array()?.first());

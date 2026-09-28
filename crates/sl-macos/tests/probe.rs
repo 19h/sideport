@@ -22,16 +22,13 @@ async fn aoskit_produces_recovered_anisette_headers() {
 }
 
 #[test]
-#[ignore = "queries System Information on this Mac"]
+#[ignore = "queries MobileGestalt on this Mac"]
 fn this_mac_reports_its_model_version_and_provisioning_udid() {
     let model = sl_macos::hardware_model().expect("hw.model");
     let (version, build) = sl_macos::os_version().expect("SystemVersion.plist");
-    let udid = sl_macos::provisioning_udid();
+    let udid = sl_macos::provisioning_udid().expect("MobileGestalt provisioning UDID");
 
-    println!(
-        "model {model}, macOS {version} ({build}), provisioning UDID: {} characters",
-        udid.map_or(0, |udid| udid.len())
-    );
+    println!("model {model}, macOS {version} ({build}), provisioning UDID: {} characters", udid.len());
 }
 
 #[test]

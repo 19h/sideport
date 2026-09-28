@@ -55,8 +55,21 @@ def session_ciphertext(data_key, data_iv, fields):
     return AES.new(data_key, AES.MODE_CBC, data_iv).encrypt(pad(encoded, 16))
 
 
-def negotiation_proof(session_key, protocol, ciphertext, context):
-    transcript = b"s2k,s2k_fo" + protocol.encode() + b"|" + ciphertext + b"|" + context
+def negotiation_proof(session_key, protocol, ciphertext, context, length_prefixed=False):
+    transcript = b"s2k,s2k_fo||" + protocol.encode() + b"|"
+
+    if length_prefixed:
+        transcript += len(ciphertext).to_bytes(4, "little")
+
+    transcript += ciphertext + b"|"
+
+    if context is not None:
+        if length_prefixed:
+            transcript += len(context).to_bytes(4, "little")
+
+        transcript += context
+
+    transcript += b"|"
     digest = hashlib.sha256(transcript).digest()
 
     return mac(mac(session_key, b"HMAC key:"), digest)
@@ -118,6 +131,7 @@ def exchange(
     )
 
     negotiation = negotiation_proof(session_key, protocol, encrypted_session, context)
+    negotiation_prefixed = negotiation_proof(session_key, protocol, encrypted_session, context, length_prefixed=True)
     negotiation_no_custodian = negotiation_proof(
         session_key, protocol, encrypted_session_no_custodian, context
     )
@@ -148,6 +162,7 @@ def exchange(
         "encrypted_session": encrypted_session.hex(),
         "context": context.hex(),
         "negotiation": negotiation.hex(),
+        "negotiation_prefixed": negotiation_prefixed.hex(),
         "encrypted_session_no_custodian": encrypted_session_no_custodian.hex(),
         "negotiation_no_custodian": negotiation_no_custodian.hex(),
         "encrypted_session_with_idmsdata": encrypted_session_with_idmsdata.hex(),

@@ -6,11 +6,11 @@
 //! `NSLocale.languageCode` → `X-Apple-Locale`; `NSTimeZone.abbreviation` →
 //! `X-Apple-I-TimeZone`; the current time → `X-Apple-I-Client-Time`. The Go host adds
 //! `X-Apple-I-MD-LU = upper(hex(sha256(device id)))`, `X-Apple-I-MD-RINFO = 17106176` and
-//! `X-MMe-Client-Info = <model> <macOS;version;build> <com.apple.AuthKit/1 (com.apple.dt.Xcode/3594.4.19)>`.
+//! `X-MMe-Client-Info = <model> <macOS;version;build> <com.apple.AuthKit/1 (com.apple.akd/1.0)>`.
 
 use super::AnisetteHeaders;
+use crate::Result;
 use crate::auth::AnisetteProvider;
-use crate::{Error, Result};
 use chrono::{DateTime, Utc};
 use futures::FutureExt;
 use futures::future::BoxFuture;
@@ -21,7 +21,7 @@ use std::sync::Arc;
 use zeroize::Zeroizing;
 
 const ROUTING_INFO: &str = "17106176";
-const CLIENT_SUFFIX: &str = "<com.apple.AuthKit/1 (com.apple.dt.Xcode/3594.4.19)>";
+const CLIENT_SUFFIX: &str = "<com.apple.AuthKit/1 (com.apple.akd/1.0)>";
 
 /// Values read from the local machine for one anisette request.
 pub struct MachineValues {
@@ -53,6 +53,15 @@ impl fmt::Debug for MachineValues {
 /// A platform source of [`MachineValues`], such as the macOS AOSKit bridge.
 pub trait MachineSource: fmt::Debug + Send + Sync {
     fn values(&self) -> BoxFuture<'_, Result<MachineValues>>;
+
+    fn headers(&self) -> BoxFuture<'_, Result<AnisetteHeaders>> {
+        async {
+            let values = self.values().await?;
+
+            machine_headers(&values, Utc::now())
+        }
+        .boxed()
+    }
 }
 
 /// Assemble validated headers in the recovered layout.
@@ -91,13 +100,7 @@ impl LocalAnisette {
     }
 
     pub async fn headers(&self) -> Result<AnisetteHeaders> {
-        let values = self.source.values().await?;
-
-        if values.otp.is_empty() || values.machine_token.is_empty() || values.device_id.is_empty() {
-            return Err(Error::Invalid("local anisette values"));
-        }
-
-        machine_headers(&values, Utc::now())
+        self.source.headers().await
     }
 }
 
@@ -110,6 +113,7 @@ impl AnisetteProvider for LocalAnisette {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Error;
 
     fn values() -> MachineValues {
         MachineValues {
@@ -137,7 +141,7 @@ mod tests {
         assert_eq!(headers.get("X-Apple-I-MD-RINFO"), Some("17106176"));
         assert_eq!(
             headers.get("X-MMe-Client-Info"),
-            Some("<Mac16,5> <macOS;27.2;26B5091g> <com.apple.AuthKit/1 (com.apple.dt.Xcode/3594.4.19)>")
+            Some("<Mac16,5> <macOS;27.2;26B5091g> <com.apple.AuthKit/1 (com.apple.akd/1.0)>")
         );
 
         let expected = hex::encode_upper(Sha256::digest(b"11111111-2222-3333-4444-555555555555"));

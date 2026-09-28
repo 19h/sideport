@@ -37,6 +37,22 @@ fn validated_headers_preserve_extensions_and_redact_debug() {
 }
 
 #[test]
+fn blocked_xcode_client_is_normalized_without_changing_machine_identity() {
+    let original = "<Mac16,5> <macOS;27.2;26B5091g> <com.apple.AuthKit/1 (com.apple.dt.Xcode/3594.4.19)>";
+    let mut remote = values();
+    remote.insert("X-MMe-Client-Info".into(), original.into());
+
+    let headers = AnisetteHeaders::new(remote).expect("headers");
+
+    assert_eq!(
+        headers.get("X-MMe-Client-Info"),
+        Some("<Mac16,5> <macOS;27.2;26B5091g> <com.apple.AuthKit/1 (com.apple.akd/1.0)>")
+    );
+    assert_eq!(headers.description(), "Mac16,5 with serial number fixture-serial running macOS 27.2 26B5091g");
+    assert_eq!(normalize_client_info("<com.apple.dt.Xcode/not-a-version>"), None);
+}
+
+#[test]
 fn malformed_and_duplicate_headers_are_rejected() {
     let mut missing = values();
     missing.remove("X-Apple-I-MD");

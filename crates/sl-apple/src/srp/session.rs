@@ -1,11 +1,11 @@
-use super::{PasswordProtocol, hash};
+use super::PasswordProtocol;
 use crate::{Error, Result, wire};
 use aes::cipher::{BlockDecryptMut, KeyIvInit, block_padding::Pkcs7};
 use aes_gcm::aead::{AeadInPlace, KeyInit, generic_array::typenum::U16};
 use aes_gcm::{AesGcm, Nonce, Tag};
 use hmac::{Hmac, Mac};
 use plist::{Dictionary, Value};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use std::fmt;
 use zeroize::Zeroizing;
 
@@ -25,20 +25,29 @@ impl fmt::Debug for VerifiedSession {
 
 impl VerifiedSession {
     /// Verify negotiation over the ciphertext before attempting CBC decryption.
-    pub fn decrypt_session_data(&self, ciphertext: &[u8], context: &[u8], proof: &[u8]) -> Result<SessionData> {
+    pub fn decrypt_session_data(&self, ciphertext: &[u8], context: Option<&[u8]>, proof: &[u8]) -> Result<SessionData> {
         if ciphertext.is_empty() || ciphertext.len() > MAX_SESSION_BYTES || !ciphertext.len().is_multiple_of(16) {
             return Err(Error::Invalid("encrypted session data length"));
         }
 
-        if context.len() > MAX_SESSION_BYTES {
+        if context.is_some_and(|value| value.len() > MAX_SESSION_BYTES) {
             return Err(Error::Invalid("negotiation context length"));
         }
 
-        let transcript = hash(&[b"s2k,s2k_fo", self.protocol.as_str().as_bytes(), b"|", ciphertext, b"|", context]);
         let negotiation_key = Zeroizing::new(hmac(&self.key[..], &[b"HMAC key:"]));
-        let mut negotiation = new_hmac(negotiation_key.as_slice());
-        negotiation.update(&transcript);
-        negotiation.verify_slice(proof).map_err(|_| Error::Verification("negotiation proof"))?;
+        let mut verified = false;
+
+        for length_prefixed in [false, true] {
+            let transcript = negotiation_transcript(self.protocol, ciphertext, context, length_prefixed);
+            let mut negotiation = new_hmac(negotiation_key.as_slice());
+
+            negotiation.update(&transcript);
+            verified |= negotiation.verify_slice(proof).is_ok();
+        }
+
+        if !verified {
+            return Err(Error::Verification("negotiation proof"));
+        }
 
         let data_key = Zeroizing::new(hmac(&self.key[..], &[b"extra data key:"]));
         let iv = Zeroizing::new(hmac(&self.key[..], &[b"extra data iv:"]));
@@ -70,6 +79,38 @@ impl VerifiedSession {
 
         Ok(SessionData { dsid, idms_token, key, continuation, additional: plist })
     }
+}
+
+fn negotiation_transcript(
+    protocol: PasswordProtocol,
+    ciphertext: &[u8],
+    context: Option<&[u8]>,
+    length_prefixed: bool,
+) -> [u8; 32] {
+    let mut digest = Sha256::new();
+
+    digest.update(b"s2k,s2k_fo||");
+    digest.update(protocol.as_str().as_bytes());
+    digest.update(b"|");
+
+    if length_prefixed {
+        digest.update((ciphertext.len() as u32).to_le_bytes());
+    }
+
+    digest.update(ciphertext);
+    digest.update(b"|");
+
+    if let Some(context) = context {
+        if length_prefixed {
+            digest.update((context.len() as u32).to_le_bytes());
+        }
+
+        digest.update(context);
+    }
+
+    digest.update(b"|");
+
+    digest.finalize().into()
 }
 
 pub enum Continuation {

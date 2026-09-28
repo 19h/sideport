@@ -99,6 +99,8 @@ struct Scenario {
     bad_negotiation: bool,
     delay_init: bool,
     idmsdata: bool,
+    custodian: bool,
+    no_trusted_devices: bool,
     trusted_device_status: Option<u16>,
 }
 
@@ -112,12 +114,17 @@ struct Responder {
 impl Respond for Responder {
     fn respond(&self, request: &Request) -> ResponseTemplate {
         match (request.method.as_str(), request.url.path()) {
-            ("GET", "/auth") => ResponseTemplate::new(200).set_body_string("bootstrap"),
+            ("GET", "/auth") => {
+                let mut response = phone();
+                response["noTrustedDevices"] = Json::Bool(self.scenario.no_trusted_devices);
+
+                ResponseTemplate::new(200).set_body_json(response)
+            }
             ("GET", "/auth/verify/trusteddevice") => match self.scenario.trusted_device_status {
                 Some(status) => ResponseTemplate::new(status).set_body_string("fixture rejection"),
                 None => ResponseTemplate::new(200).set_body_json(phone()),
             },
-            ("POST", "/auth/verify/phone/put") => ResponseTemplate::new(200).set_body_json(phone()),
+            ("PUT", "/auth/verify/phone") => ResponseTemplate::new(200).set_body_json(phone()),
             ("POST", "/auth/verify/phone/securitycode") => {
                 ResponseTemplate::new(200).set_body_json(json!({ "serviceErrors": [] }))
             }
@@ -158,10 +165,11 @@ impl Responder {
                 }
 
                 let factor = self.scenario.factor && (attempt == 0 || self.scenario.repeat_factor);
-                let (session_key, negotiation_key) = match (factor, self.scenario.idmsdata) {
-                    (true, true) => ("encrypted_session_with_idmsdata", "negotiation_with_idmsdata"),
-                    (true, false) => ("encrypted_session_no_custodian", "negotiation_no_custodian"),
-                    (false, _) => ("encrypted_session", "negotiation"),
+                let (session_key, negotiation_key) = match (factor, self.scenario.idmsdata, self.scenario.custodian) {
+                    (true, true, _) => ("encrypted_session_with_idmsdata", "negotiation_with_idmsdata"),
+                    (true, false, true) => ("encrypted_session", "negotiation"),
+                    (true, false, false) => ("encrypted_session_no_custodian", "negotiation_no_custodian"),
+                    (false, _, _) => ("encrypted_session", "negotiation"),
                 };
                 let mut server_proof = binary(&self.vector, "server_proof");
                 let mut negotiation = binary(&self.vector, negotiation_key);
@@ -273,6 +281,7 @@ fn phone() -> Json {
         "maskedPhoneNumber": "***1234",
         "securityCode": { "length": 6 },
         "trustedPhoneNumber": { "id": 7, "obfuscatedNumber": "***1234" },
+        "trustedPhoneNumbers": [{ "id": 7, "numberWithDialCode": "***1234" }],
     })
 }
 
@@ -430,7 +439,13 @@ async fn sms_request_and_trusted_device_fallback_use_phone_path() {
         harness.login(&delegate).await.expect("SMS login");
 
         let requests = harness.requests().await;
-        assert!(requests.iter().any(|request| request.url.path() == "/auth/verify/phone/put"));
+        let delivery = requests
+            .iter()
+            .find(|request| request.method.as_str() == "PUT" && request.url.path() == "/auth/verify/phone")
+            .expect("SMS delivery request");
+        let body: Json = serde_json::from_slice(&delivery.body).expect("SMS delivery JSON");
+
+        assert_eq!(body, json!({ "phoneNumber": { "id": 7 }, "mode": "sms" }));
         assert!(requests.iter().any(|request| request.url.path() == "/auth/verify/phone/securitycode"));
         assert!(!requests.iter().any(|request| request.url.path().ends_with("/validate")));
         assert_eq!(delegate.prompts().last().expect("SMS prompt").destination, "***1234");
@@ -466,9 +481,34 @@ async fn factor_attempt_limits_bound_requests() {
     assert!(matches!(repeated_sms.login(&delegate).await, Err(Error::RetryLimit("SMS requests"))));
     assert!(!delegate.prompts().last().expect("final prompt").can_request_sms);
     assert_eq!(
-        repeated_sms.requests().await.iter().filter(|request| request.url.path() == "/auth/verify/phone/put").count(),
+        repeated_sms.requests().await.iter().filter(|request| request.url.path() == "/auth/verify/phone").count(),
         MAX_SMS_REQUESTS
     );
+}
+
+#[tokio::test]
+async fn custodian_session_requests_trusted_device_delivery() {
+    let harness = Harness::new(Scenario { factor: true, custodian: true, ..Default::default() }).await;
+    let delegate = FixedDelegate::with([FactorReply::Code(Zeroizing::new("123456".into()))]);
+    harness.login(&delegate).await.expect("second-factor session");
+
+    let requests = harness.requests().await;
+
+    assert!(requests.iter().any(|request| request.url.path() == "/auth"));
+    assert!(requests.iter().any(|request| request.url.path() == "/auth/verify/trusteddevice"));
+}
+
+#[tokio::test]
+async fn no_trusted_devices_uses_automatically_delivered_phone_code() {
+    let harness = Harness::new(Scenario { factor: true, no_trusted_devices: true, ..Default::default() }).await;
+    let delegate = FixedDelegate::with([FactorReply::Code(Zeroizing::new("123456".into()))]);
+    harness.login(&delegate).await.expect("phone-code session");
+
+    let requests = harness.requests().await;
+
+    assert!(!requests.iter().any(|request| request.url.path() == "/auth/verify/trusteddevice"));
+    assert!(!requests.iter().any(|request| request.url.path() == "/auth/verify/phone"));
+    assert!(requests.iter().any(|request| request.url.path() == "/auth/verify/phone/securitycode"));
 }
 
 #[tokio::test]

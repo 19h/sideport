@@ -2,33 +2,34 @@
 
 The complete objective remains the workflow ledger in [ARCHITECTURE.md](ARCHITECTURE.md).
 This document records the authentication and portal clients and their verification boundaries.
-Live Apple authentication and the current availability of the recovered services are unknown.
+The local-anisette SRP exchange reached Apple's second-factor challenge on this Mac in September
+2026. Second-factor delivery, token issuance and portal provisioning are still unverified.
 
 ## Requirement coverage
 
 | Recovered requirement | Implementation/evidence | Remaining evidence or work |
 |---|---|---|
 | Remote anisette GET, user hash, time refresh and caching | `sl-apple::anisette`; actual HTTP mock, query preservation, shared refresh, user change and clock/bucket tests | Authorized live provider verification; private provider/feature-token integration |
-| Local AOSKit, Mail/AltServer notification protocol and kbsync | `sl-macos` AOSKit bridge (`retrieveOTPHeadersForDSID:@"-2"`, serial, UDID) and `LocalAnisette` header assembly with the Go host's LU/RINFO/client-info fields; per-job fallback from local to the alternate provider; on this Mac AOSKit refused the request (below) | Mail/AltServer plug-in anisette (disabled by the recovered client since Sonoma; not implemented, declined during implementation), an entitled local path. kbsync is excluded with the App Store path (row below) |
-| SHA-256 SRP, 2048-bit group, `s2k`/`s2k_fo`, M1/M2 | Consuming `SrpClient` → `SrpProof` → `VerifiedSession`; eight independent Python vectors; GSA init/complete/apptokens over bounded XML plist HTTP with cookie scoping; engine login job | Authorized live GSA account verification |
+| Local anisette | `sl-macos` uses in-process AnisetteKit/Unicorn ADI on macOS 26+ and AOSKit on older systems; this Mac generated OTP headers locally and reached Apple's second-factor challenge after AOSKit returned -45070 | Live token issuance and portal acceptance; kbsync remains excluded with the App Store path |
+| SHA-256 SRP, 2048-bit group, `s2k`/`s2k_fo`, M1/M2 | Consuming `SrpClient` → `SrpProof` → `VerifiedSession`; eight independent Python vectors; GSA init/complete/apptokens over bounded XML plist HTTP with cookie scoping; engine login job; live init/complete reached second-factor challenge | Live app-token and portal verification |
 | Negotiation proof, session-data CBC and app-token GCM | HMAC verification precedes CBC; strict PKCS#7; authenticated `XYZ` token envelope; independent CBC/GCM vectors and complete mock GSA exchanges | Token persistence and live service verification |
 | Alternate anisette retry on -36607 | Complete-operation mismatch switches providers once and restarts the exchange; mock server verifies selection and bound; engine settings accept an alternate remote provider | UI controls and live verification |
-| Trusted-device/SMS 2FA, repair/security-upgrade handling | Client prompts through `FactorDelegate`; trusted-device/SMS transport, code validation, bounded retry and one login restart are exercised against a mock server; repair/upgrade return typed errors; engine prompt bridge | Live parity for uncertain recovered branches, desktop account controls and account verification |
+| Trusted-device/SMS 2FA, repair/security-upgrade handling | Client prompts through `FactorDelegate`; `GET /auth` and trusted-device delivery are explicit, including accounts with `canHaveCustodian`; SMS uses JSON `PUT /auth/verify/phone`; code validation, bounded retry and one login restart are exercised against a mock server; repair/upgrade return typed errors | Live delivery and submission verification |
 | Legacy IDMS, session migration/persistence | GSA sessions, remembered passwords and the signing key persist in the macOS keychain (or a 0600 file); accounts, teams and certificates in SQLite; restart restores sessions; recovered `sessions.json` GSA entries import; code 1100 renews a session once | Legacy IDMS client (not implemented, declined during implementation); live session-lifetime verification |
 | Portal teams/devices/certificates/app IDs/profiles and free/paid/tvOS policy | Typed QH65B2 client; engine provisioning: device registration, certificate reuse by public key, CSR with machine UUID/hostname, confirmed 7460 revocation of the oldest certificate, App ID reuse/creation with recovered name sanitizing, free quota, profile download with trust verification, recovered bundle-ID mangling, tvOS selection and optional per-extension App IDs; stateful fake-portal fixtures | Live portal compatibility; device-target integration; UI/CLI controls |
 | Provisioning profile field validation and CMS trust | `ProvisioningProfile::validate_for` checks decoded dates, team, prefix, App ID, platform, certificate and device; `verify_trust` checks the CMS signature, chain and signer policy against configured anchors; bundle signing preflights every embedded profile before mutation; the engine verifies every downloaded profile | Physical-device acceptance |
 | Store/FairPlay/kbsync and private services | Private services: `sl-services` (docs/SERVICES.md). Store: excluded — the recovered Store client impersonates Apple's iTunes client with kbsync client-attestation tokens to download FairPlay-protected packages; Sideport refuses App Store deeplinks as unsupported | Private services: operator-supplied endpoints and dated live checks |
 
-`AuthClient::login` accepts remote anisette providers and a factor delegate. Its HTTP fixtures
+`AuthClient::login` accepts anisette providers and a factor delegate. Its HTTP fixtures
 exercise request fields, cookies, proofs, factor paths and failure transitions; they do not
 establish acceptance by Apple's current servers. The non-demo `Engine::login` job maps
 password/second-factor prompts into this client and persists the completed session. It
-requires remote anisette configuration, attempts portal team enumeration after GSA, and leaves
+uses the configured anisette provider, attempts portal team enumeration after GSA, and leaves
 teams empty with a warning if that call fails. With `remember`, the password is stored as a
 secret; a login without a supplied password uses it, and a remembered password rejected with
 -22406 is forgotten before the user is asked once. `Engine::test_anisette` runs the real provider
 on the engine's Tokio runtime.
-`sideport anisette --remote URL [--json]` reports its machine description. Neither interface
+`sideport anisette --local [--json]` reports its machine description. Neither interface
 prints the OTP headers. Desktop and CLI account controls remain to be integrated.
 
 ## Cryptographic byte contract
@@ -48,8 +49,10 @@ Let H be SHA-256, `s` the original salt bytes, and `p` the UTF-8 password bytes:
 5. Compute `K = H(minimal(S))`. M1 and M2 follow the pinned PySRP implementation, including
    the padded generator hash and minimal A/B encodings. A successful M2 transition exposes
    session decryption; a failed transition consumes and discards its state.
-6. Verify the recovered negotiation HMAC over the advertised protocol string, selected
-   protocol, encrypted session data and optional context. Decrypt CBC only after verification.
+6. Verify the negotiation HMAC over `s2k,s2k_fo||`, the selected protocol, `|`, encrypted
+   session data, `|`, optional context and a final `|`. The recovered Sideloadly client uses
+   raw data fields; AltSign prefixes each present data field with its 4-byte little-endian length.
+   Sideport checks both exact transcripts and decrypts CBC only after one HMAC matches.
 7. Parse authenticated plist fragments, retain the DSID, IDMS token, app key, continuation
    and additional unlock fields. The app-token checksum covers `apptokens`, DSID and
    `com.apple.gs.xcode.auth`. GCM authenticates `XYZ` as associated data and uses a 16-byte nonce.
@@ -87,29 +90,47 @@ the authenticated in-memory token, so account state and team state remain distin
 
 ## Local anisette
 
-`LocalAnisette` maps AOSKit's `X-Apple-MD`/`X-Apple-MD-M` to `X-Apple-I-MD`/`X-Apple-I-MD-M`, adds
+On macOS 26+, `LocalAnisette` uses an in-process Swift bridge to the pinned AnisetteKit package.
+The bridge uses Unicorn to execute `libstoreservicescore.so` and `libCoreADI.so`, extracted on
+first use from Apple's Apple Music APK. It provisions a persistent random UUID with Apple, stores
+the ADI state under `~/Library/Application Support/Sideport/Anisette`, and generates a fresh OTP
+per request. Sideport supplies the actual Mac model and OS version to the bridge. The libraries
+and provisioned identity remain local; Apple receives the normal provisioning and sign-in requests.
+The dynamic bridge is built by SwiftPM during the `sl-macos` Cargo build, using the pinned
+[AnisetteKit source](https://github.com/altstoreio/AnisetteKit/tree/1f5a7e36553cc865b873f222b87a6486c0bcc7bf)
+and its AGPL-3.0 license. AltServer's [local implementation](https://github.com/altstoreio/AltStore/commit/fafd76e)
+provides the independently tested precedent for this route.
+
+On older macOS releases, `LocalAnisette` maps AOSKit's `X-Apple-MD`/`X-Apple-MD-M` to `X-Apple-I-MD`/`X-Apple-I-MD-M`, adds
 the serial (`X-Apple-I-SRL-NO`), machine UDID (`X-Mme-Device-Id`), locale language code, time-zone
 abbreviation and client time, then the Go host's `X-Apple-I-MD-LU = upper(hex(SHA-256(UDID)))`,
 `X-Apple-I-MD-RINFO = 17106176` and `X-MMe-Client-Info = <hw.model> <macOS;version;build>
-<com.apple.AuthKit/1 (com.apple.dt.Xcode/3594.4.19)>`. `sl-macos` loads
+<com.apple.AuthKit/1 (com.apple.akd/1.0)>`. `sl-macos` loads
 `AOSKit.framework`, requires `AOSUtilities` and its three class methods (recovered "AOS
 incompatible"), and reads the model from `sysctl`, the OS version from `SystemVersion.plist`
-and, for Apple Silicon targets, the provisioning UDID from System Information
-(`provisioning_UDID`, the value `get_m1_udid` reads through MobileGestalt). Only the AOSKit
-module uses `unsafe` Objective-C messages.
+and, for Apple Silicon targets, the provisioning UDID from the recovered `get_m1_udid`
+helper's `MGCopyAnswer("ProvisioningUniqueDeviceID")` call. The AOSKit and MobileGestalt
+modules contain the required `unsafe` framework calls.
 
-Selection follows the recovered chain at the start of each job: a local provider is probed; if
-it produces no headers, the configured alternate provider is used with a warning, else the job
-fails with guidance to configure a remote provider. Portal requests use the same selection, so a
-session keeps one machine identity while local anisette remains unavailable. Login emits
+Selection probes the local provider at the start of each job. The alternate provider is used only
+when one is explicitly configured. Portal requests use the same selection. Login emits
 `Fact::AnisetteDevice` with the recovered "shown in your Apple ID as" description.
 
 On 2026-09-28 on this Mac (Mac16,5, macOS 27.2 26B5091g), AOSKit loaded and `AOSUtilities`
 responded to all three selectors, but `retrieveOTPHeadersForDSID:@"-2"` returned an empty
 dictionary and AOSKit logged `Info request failed: -45070` for the unsigned test process and the
-`sideport` executable. Local anisette is therefore unavailable here; whether a differently
-signed or entitled process succeeds is unknown. Header assembly and the fallback chain are
-covered by unit and engine tests with injected machine values.
+`sideport` executable. Whether a differently signed or entitled process succeeds is unknown.
+The in-process path generated complete local headers on this Mac, including after restarting
+Sideport with the saved provisioning state. Apple ID sign-in and portal acceptance remain untested.
+
+IDA analysis of the local `AOSKit.merged` database (`365a8d22b2be`) shows that
+`+[AOSUtilities retrieveOTPHeadersForDSID:]` at `0x1c05420f8` calls `ADIOTPRequest` at
+`0x1c057d264`. A nonzero result reaches `A: Info request failed: %d`; this wrapper does not
+provide another OTP generation path. `+[AOSUtilities machineUDID]` at `0x1c040c044` uses
+`gethostuuid`. That anisette device identifier differs in origin from the Mac provisioning UDID
+read by `get_m1_udid` through `MGCopyAnswer("ProvisioningUniqueDeviceID")`. Replacing the latter
+with a direct MobileGestalt call did not change the `-45070` result. The precise meaning of
+`-45070` remains unknown from the examined wrapper.
 
 ## Account state and provisioning policy
 
@@ -329,6 +350,8 @@ Primary sources:
   fixed exponent-width modular operations used by this implementation.
 - [AltSign authentication client](https://github.com/rileytestut/AltSign/blob/master/AltSign/Apple%20API/ALTAppleAPI%2BAuthentication.m):
   independent client evidence for the GSA operation sequence, proof check and trusted-device verification.
+- [Fastlane Spaceship second-factor client](https://github.com/fastlane/fastlane/blob/master/spaceship/lib/spaceship/two_step_or_factor_client.rb):
+  JSON phone delivery and submission body shapes on Apple's IDMS authentication host.
 - [Fastlane Spaceship portal client](https://github.com/fastlane/fastlane/blob/master/spaceship/lib/spaceship/portal/portal_client.rb):
   independent client evidence for QH65B2 team and Xcode provisioning action names. Its newer
   portal host and request format are not assumed equivalent to the recovered client.
@@ -361,9 +384,10 @@ Primary sources:
   Dependent result: live sign-in interoperability. Probe: strict mock request/response fixtures,
   then authorized live trace comparison of each operation and status. Current availability is unknown.
 - A6: An absent `idmsdata` selects GET trusted-device validation, while present `idmsdata`
-  selects POST with a plist body; successful SMS submission has no `serviceErrors`. The recovered
-  control flow is ambiguous at these branches. Dependent result: second-factor interoperability.
-  Probe: both method/body fixtures, rejection fixtures and authorized live factor traces.
+  selects POST with a plist body. The JSON phone flow used by Fastlane against IDMS also works
+  on GSA; successful SMS submission has no `serviceErrors`. The recovered control flow is
+  ambiguous at these branches. Dependent result: second-factor interoperability. Probe: both
+  method/body fixtures, rejection fixtures and authorized live factor traces.
 - A7: A complete-operation `-36607` indicates anisette mismatch, and a second factor requires
   one fresh login exchange after verification. Dependent result: provider fallback and session
   transition. Probe: mock retry/restart counts; compare authorized live status transitions.

@@ -25,6 +25,7 @@ struct Vector {
     encrypted_session: String,
     context: String,
     negotiation: String,
+    negotiation_prefixed: String,
     token: String,
     checksum: String,
 }
@@ -69,7 +70,7 @@ fn independent_srp_and_encrypted_token_vectors() {
         let data = session
             .decrypt_session_data(
                 &bytes(&vector.encrypted_session),
-                &bytes(&vector.context),
+                Some(&bytes(&vector.context)),
                 &bytes(&vector.negotiation),
             )
             .expect("independent negotiation and CBC");
@@ -89,6 +90,14 @@ fn independent_srp_and_encrypted_token_vectors() {
         assert!(!debug.contains("fixture-idms-token"));
         assert!(!debug.contains("fixture-continuation"));
         assert!(!debug.contains(&vector.key));
+
+        session
+            .decrypt_session_data(
+                &bytes(&vector.encrypted_session),
+                Some(&bytes(&vector.context)),
+                &bytes(&vector.negotiation_prefixed),
+            )
+            .expect("length-prefixed negotiation");
     }
 }
 
@@ -119,13 +128,28 @@ fn negotiation_protects_protocol_ciphertext_and_context() {
         (&ciphertext[..], &context[..], &negotiation[..31]),
     ] {
         assert!(matches!(
-            session.decrypt_session_data(ciphertext, context, proof),
+            session.decrypt_session_data(ciphertext, Some(context), proof),
             Err(Error::Verification("negotiation proof"))
         ));
     }
 
+    let incomplete = hash(&[b"s2k,s2k_fo", b"s2k", b"|", &ciphertext, b"|", &context]);
+    let negotiation_key = test_mac(&session.key[..], b"HMAC key:");
+    let incomplete_proof = test_mac(&negotiation_key, &incomplete);
+    let single_separator = hash(&[b"s2k,s2k_fo|s2k|", &ciphertext, b"|", &context, b"|"]);
+    let single_separator_proof = test_mac(&negotiation_key, &single_separator);
+
+    assert!(matches!(
+        session.decrypt_session_data(&ciphertext, Some(&context), &incomplete_proof),
+        Err(Error::Verification("negotiation proof"))
+    ));
+    assert!(matches!(
+        session.decrypt_session_data(&ciphertext, Some(&context), &single_separator_proof),
+        Err(Error::Verification("negotiation proof"))
+    ));
+
     let switched = VerifiedSession { key: session.key, protocol: PasswordProtocol::S2kFo };
-    assert!(switched.decrypt_session_data(&ciphertext, &context, &negotiation).is_err());
+    assert!(switched.decrypt_session_data(&ciphertext, Some(&context), &negotiation).is_err());
 }
 
 #[test]
@@ -137,12 +161,12 @@ fn authenticated_invalid_pkcs7_padding_is_rejected() {
     ciphertext[length - 17] ^= 1;
 
     let context = bytes(&vector.context);
-    let transcript = hash(&[b"s2k,s2k_fo", b"s2k", b"|", &ciphertext, b"|", &context]);
+    let transcript = test_transcript("s2k", &ciphertext, Some(&context), false);
     let negotiation_key = test_mac(&session.key[..], b"HMAC key:");
     let negotiation = test_mac(&negotiation_key, &transcript);
 
     assert!(matches!(
-        session.decrypt_session_data(&ciphertext, &context, &negotiation),
+        session.decrypt_session_data(&ciphertext, Some(&context), &negotiation),
         Err(Error::Verification("session data padding"))
     ));
 }
@@ -152,7 +176,11 @@ fn token_tampering_and_invalid_envelopes_are_rejected() {
     let vector = fixtures().remove(0);
     let session = proof(&vector).verify(&bytes(&vector.server_proof)).expect("session");
     let data = session
-        .decrypt_session_data(&bytes(&vector.encrypted_session), &bytes(&vector.context), &bytes(&vector.negotiation))
+        .decrypt_session_data(
+            &bytes(&vector.encrypted_session),
+            Some(&bytes(&vector.context)),
+            &bytes(&vector.negotiation),
+        )
         .expect("session data");
     let token = bytes(&vector.token);
 
@@ -208,6 +236,32 @@ fn test_mac(key: &[u8], message: &[u8]) -> [u8; 32] {
     mac.finalize().into_bytes().into()
 }
 
+fn test_transcript(protocol: &str, ciphertext: &[u8], context: Option<&[u8]>, length_prefixed: bool) -> [u8; 32] {
+    let mut transcript = b"s2k,s2k_fo||".to_vec();
+
+    transcript.extend_from_slice(protocol.as_bytes());
+    transcript.push(b'|');
+
+    if length_prefixed {
+        transcript.extend_from_slice(&(ciphertext.len() as u32).to_le_bytes());
+    }
+
+    transcript.extend_from_slice(ciphertext);
+    transcript.push(b'|');
+
+    if let Some(context) = context {
+        if length_prefixed {
+            transcript.extend_from_slice(&(context.len() as u32).to_le_bytes());
+        }
+
+        transcript.extend_from_slice(context);
+    }
+
+    transcript.push(b'|');
+
+    hash(&[&transcript])
+}
+
 #[test]
 fn authenticated_invalid_session_schema_and_xml_are_rejected() {
     let vector = fixtures().remove(0);
@@ -230,9 +284,9 @@ fn authenticated_invalid_session_schema_and_xml_are_rejected() {
     ] {
         let cipher = cbc::Encryptor::<aes::Aes256>::new_from_slices(&data_key, &iv[..16]).expect("cipher parameters");
         let ciphertext = cipher.encrypt_padded_vec_mut::<Pkcs7>(fragment.as_bytes());
-        let transcript = hash(&[b"s2k,s2k_fo", b"s2k", b"|", &ciphertext, b"|"]);
+        let transcript = test_transcript("s2k", &ciphertext, None, false);
         let negotiation = test_mac(&negotiation_key, &transcript);
 
-        assert!(session.decrypt_session_data(&ciphertext, &[], &negotiation).is_err(), "{fragment}");
+        assert!(session.decrypt_session_data(&ciphertext, None, &negotiation).is_err(), "{fragment}");
     }
 }
