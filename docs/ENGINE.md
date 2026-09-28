@@ -93,6 +93,29 @@ that header cross-origin without a preflight, which is refused, so a web page ca
 queue refreshes or close the app. The return page names Sideport. The app is not restarted by
 the engine; `/restart` asks the front end to close. Demo instances do not serve IPC.
 
+## Menu-bar daemon
+
+`sideport-tray` (`crates/sl-tray`) runs the engine's refresh scheduler behind a menu-bar icon, as
+the recovered `sideloadly-daemon` (a Qt tray app) does. The menu is built as data
+(`sl_tray::menu`) from the tracked installations and rendered with `tray-icon` on a `winit` event
+loop (macOS and Windows; elsewhere `sideport daemon` remains the scheduler). Recovered from
+`main.TickWithForce` and `main.fillJitMenu`: each installation's submenu is titled with its
+remaining time, `KnownTTL` days (7 when unknown) minus the time since installation, as a
+seven-cell bar and day count (` [#####__] 5 days left`, singular "day" for one), `, WARNING!`
+below three days and ` [FAIL]` after more than two consecutive failures; the submenu offers
+"Refresh Now", "Enable JIT" and "Forget [!]", followed by "Enable JIT for Apps", "Refresh All
+Manually", "Reset Database (!)" and "Automatically Launch on System Boot". Sideport adds "Open
+Sideport" (raises the desktop app over IPC or starts it) and "Quit". Deviations: titles name the
+app and device instead of the cleaned final bundle identifier; negative remaining time is shown
+as 0 rather than Go's unsigned wrap-around; "Reset Database" forgets every tracked installation
+(accounts and settings stay) instead of deleting the database, and both destructive items ask
+first; jobs started from the menu decline their prompts and show the outcome as a status line.
+The menu is rebuilt after each refresh notification and every minute. `--print-menu` builds
+the native menu for the current state and prints it. Evidence: model tests for the labels and
+actions; the native menu printed for an empty and a two-installation fixture data directory
+(including the `[FAIL]` suffix); the running tray exposed one status item in the menu bar
+through macOS accessibility. Opening the menu by pointer was not verified.
+
 ## Algorithm and complexity
 
 The export sequence is: validate the requested backend/options; inspect on a blocking worker;

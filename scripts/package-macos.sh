@@ -11,8 +11,8 @@ sideport_profile=${1:-debug}
 cd "$sideport_root"
 
 case "$sideport_profile" in
-    debug) "$sideport_root/scripts/cargo-ui.sh" build -p sl-app -p sl-cli ;;
-    release) "$sideport_root/scripts/cargo-ui.sh" build -p sl-app -p sl-cli --release ;;
+    debug) "$sideport_root/scripts/cargo-ui.sh" build -p sl-app -p sl-cli -p sl-tray ;;
+    release) "$sideport_root/scripts/cargo-ui.sh" build -p sl-app -p sl-cli -p sl-tray --release ;;
     *) printf '%s\n' 'Usage: scripts/package-macos.sh [debug|release]' >&2; exit 2 ;;
 esac
 
@@ -21,6 +21,7 @@ mkdir -p "$sideport_bundle/Contents/MacOS"
 cp "$sideport_root/target/$sideport_profile/SideportDesktop" "$sideport_bundle/Contents/MacOS/SideportDesktop"
 # The login item runs this tool's scheduler (`sideport daemon`), as the recovered app ships a daemon.
 cp "$sideport_root/target/$sideport_profile/sideport" "$sideport_bundle/Contents/MacOS/sideport"
+cp "$sideport_root/target/$sideport_profile/sideport-tray" "$sideport_bundle/Contents/MacOS/sideport-tray"
 rm -f "$sideport_bundle/Contents/MacOS/Sideport"
 
 cat > "$sideport_bundle/Contents/Info.plist" <<'PLIST'
