@@ -171,3 +171,56 @@ pub(super) fn start(inner: &Arc<Inner>) {
         }
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{AppOptions, JobSpec, SigningMode, Target};
+
+    fn installation(id: i64, expires: Option<&str>, auto_refresh: bool) -> Installation {
+        Installation {
+            id,
+            app_name: "App".into(),
+            bundle_id: format!("com.example.app{id}"),
+            original_bundle_id: "com.example.app".into(),
+            version: None,
+            device_udid: "UDID".into(),
+            device_name: "Phone".into(),
+            apple_id: "fixture@example.test".into(),
+            team_id: "TEAM123456".into(),
+            installed_at: "2026-09-01T00:00:00Z".parse().expect("date"),
+            expires_at: expires.map(|expires| expires.parse().expect("date")),
+            auto_refresh,
+            last_error: None,
+            consecutive_failures: 0,
+            icon_png: None,
+            spec: JobSpec {
+                source: "/a.ipa".into(),
+                target: Target::Device { udid: "UDID".into(), prefer_network: false },
+                signing: SigningMode::AdHoc,
+                options: AppOptions::default(),
+            },
+        }
+    }
+
+    #[test]
+    fn due_selection_follows_the_clock_it_is_given_including_shifts() {
+        let installations = [
+            installation(1, Some("2026-09-08T00:00:00Z"), true),
+            installation(2, Some("2026-09-06T00:00:00Z"), true),
+            installation(3, Some("2026-09-06T00:00:00Z"), false),
+            installation(4, None, true),
+        ];
+
+        let monday: chrono::DateTime<Utc> = "2026-09-05T00:00:00Z".parse().expect("date");
+        assert_eq!(due(&installations, 48, monday), [2], "within 48 h; disabled and unknown expiry skipped");
+
+        // The clock jumps forward a week: everything with a known expiry is due, including expired.
+        let jumped = monday + Duration::days(7);
+        assert_eq!(due(&installations, 48, jumped), [1, 2]);
+
+        // The clock is set back a month: nothing is due until the threshold is reached again.
+        let set_back = monday - Duration::days(30);
+        assert!(due(&installations, 48, set_back).is_empty());
+    }
+}

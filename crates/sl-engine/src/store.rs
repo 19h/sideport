@@ -16,6 +16,10 @@ use std::time::Duration;
 
 const SCHEMA_VERSION: i64 = 2;
 
+/// How far a refresh claim may lie in the future before it is treated as written by a clock
+/// that has since been set back.
+const CLOCK_SKEW: chrono::Duration = chrono::Duration::minutes(5);
+
 const SCHEMA: &str = "
     CREATE TABLE accounts (
         apple_id TEXT PRIMARY KEY,
@@ -417,7 +421,8 @@ impl Store {
     }
 
     /// Claim the oldest queued refresh for `claim`. An entry claimed before `stale_before`
-    /// (a crashed process) can be claimed again. Returns the claimed entry.
+    /// (a crashed process) can be claimed again, and so can one claimed more than
+    /// [`CLOCK_SKEW`] after `now` (the clock was set back since). Returns the claimed entry.
     pub(crate) fn claim_refresh(
         &self,
         claim: &str,
@@ -425,6 +430,7 @@ impl Store {
         stale_before: DateTime<Utc>,
     ) -> Result<Option<QueuedRefresh>> {
         let connection = self.connection.lock();
+        let future_after = now + CLOCK_SKEW;
 
         connection
             .query_row(
@@ -432,11 +438,11 @@ impl Store {
                  WHERE id = (
                      SELECT id FROM installations
                      WHERE enqueued_at IS NOT NULL AND enqueue_token IS NOT NULL
-                       AND (claimed_at IS NULL OR claimed_at < ?3)
+                       AND (claimed_at IS NULL OR claimed_at < ?3 OR claimed_at > ?4)
                      ORDER BY enqueued_at, id LIMIT 1
                  )
                  RETURNING id, enqueue_token",
-                params![claim, now.timestamp(), stale_before.timestamp()],
+                params![claim, now.timestamp(), stale_before.timestamp(), future_after.timestamp()],
                 |row| Ok(QueuedRefresh { installation_id: row.get(0)?, token: row.get(1)? }),
             )
             .optional()
@@ -697,6 +703,36 @@ mod tests {
         assert!(!store.dequeue_refresh(&stale).expect("stale token"));
         assert!(store.dequeue_refresh(&next).expect("dequeue"));
         assert_eq!(store.next_refresh().expect("next").map(|entry| entry.installation_id), Some(first));
+    }
+
+    #[test]
+    fn claims_of_crashed_processes_and_claims_from_before_a_clock_change_are_taken_over() {
+        let directory = tempfile::tempdir().expect("data directory");
+        let store = Store::open(directory.path()).expect("store");
+        let id = store.record_installation(&installation("UDID1", "com.example.one", "/a.ipa")).expect("one");
+        let timeout = chrono::Duration::hours(1);
+        let start: DateTime<Utc> = "2026-09-01T12:00:00Z".parse().expect("date");
+
+        assert!(store.enqueue_refresh(id, "queued", start).expect("queue"));
+        let crashed = store.claim_refresh("claim-a", start, start - timeout).expect("claim").expect("entry");
+
+        let soon = start + chrono::Duration::minutes(30);
+        assert!(store.claim_refresh("claim-b", soon, soon - timeout).expect("claim").is_none(), "a live claim holds");
+
+        let after_timeout = start + chrono::Duration::minutes(61);
+        let taken = store.claim_refresh("claim-b", after_timeout, after_timeout - timeout).expect("claim");
+        assert_eq!(taken.as_ref().map(|entry| entry.token.as_str()), Some("claim-b"), "the crashed claim expired");
+        assert!(!store.dequeue_refresh(&crashed).expect("late dequeue"), "the crashed process cannot clear it");
+
+        // The clock is set back two hours: claim-b now lies in the future and is taken over.
+        let earlier = start - chrono::Duration::hours(1);
+        let small_shift = after_timeout - chrono::Duration::minutes(3);
+        assert!(store.claim_refresh("claim-c", small_shift, small_shift - timeout).expect("claim").is_none());
+
+        let after_shift = store.claim_refresh("claim-c", earlier, earlier - timeout).expect("claim").expect("entry");
+        assert_eq!(after_shift.token, "claim-c");
+        assert!(store.dequeue_refresh(&after_shift).expect("dequeue"));
+        assert!(store.next_refresh().expect("next").is_none());
     }
 
     #[test]

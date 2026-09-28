@@ -75,9 +75,15 @@ and records success or the failure count. The scheduler (disabled by
 `EngineConfig::disable_scheduler`) runs every `check_interval_minutes`, queues automatic
 installations expiring within `threshold_hours` whose paired device is attached over USB (or
 the network when `allow_network`), claims each queue entry in the database so processes sharing a
-data directory run it once (claims older than one hour are taken over), and runs it without
-interaction: prompts are declined, so second factors, revocations and retry questions fail the
-refresh instead of waiting.
+data directory run it once, and runs it without interaction: prompts are declined, so second
+factors, revocations and retry questions fail the refresh instead of waiting. A claim older than
+one hour (a crashed process) is taken over, and so is one more than five minutes in the future
+(the clock was set back since it was written); the crashed or displaced process can no longer
+clear the entry. Due selection compares expiry with the current clock, so a clock set forward makes
+installations due at once and one set back defers them. Store and selection fixtures cover the
+crash takeover, both clock directions and the five-minute tolerance; multi-process crash tests
+with real processes remain open. The desktop app's local IPC also queues a refresh through
+`/enqueue` (docs/ENGINE.md).
 
 ## Device log
 

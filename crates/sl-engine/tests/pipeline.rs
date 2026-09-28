@@ -437,9 +437,6 @@ fn an_input_rewritten_while_the_job_runs_fails_the_job_before_output() {
     });
 
     let result = block_on(handle.result());
-    assert!(
-        matches!(&result, Err(EngineError::InvalidApp(message)) if message.contains("Info.plist")),
-        "{result:?}"
-    );
+    assert!(matches!(&result, Err(EngineError::InvalidApp(message)) if message.contains("Info.plist")), "{result:?}");
     assert!(!output.exists(), "no output is written from a changed input");
 }
