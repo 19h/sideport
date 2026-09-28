@@ -7,9 +7,11 @@ pub mod download;
 mod enrich;
 pub mod flip;
 pub mod link;
+pub mod special;
 
 pub use download::{Downloader, Observer, Request};
 pub use link::{Digest, Enrichment, Link};
+pub use special::{SpecialResolver, SpecialSources};
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum Error {
