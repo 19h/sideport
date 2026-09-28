@@ -9,7 +9,7 @@ Live Apple authentication and the current availability of the recovered services
 | Recovered requirement | Implementation/evidence | Remaining evidence or work |
 |---|---|---|
 | Remote anisette GET, user hash, time refresh and caching | `sl-apple::anisette`; actual HTTP mock, query preservation, shared refresh, user change and clock/bucket tests | Authorized live provider verification; private provider/feature-token integration |
-| Local AOSKit, Mail/AltServer notification protocol and kbsync | Not implemented | Native bridge, bounded IPC, fallback selection and native verification |
+| Local AOSKit, Mail/AltServer notification protocol and kbsync | `sl-macos` AOSKit bridge (`retrieveOTPHeadersForDSID:@"-2"`, serial, UDID) and `LocalAnisette` header assembly with the Go host's LU/RINFO/client-info fields; per-job fallback from local to the alternate provider; on this Mac AOSKit refused the request (below) | Mail/AltServer plug-in (disabled by the recovered client since Sonoma), kbsync, an entitled local path |
 | SHA-256 SRP, 2048-bit group, `s2k`/`s2k_fo`, M1/M2 | Consuming `SrpClient` → `SrpProof` → `VerifiedSession`; eight independent Python vectors; GSA init/complete/apptokens over bounded XML plist HTTP with cookie scoping; engine login job | Authorized live GSA account verification |
 | Negotiation proof, session-data CBC and app-token GCM | HMAC verification precedes CBC; strict PKCS#7; authenticated `XYZ` token envelope; independent CBC/GCM vectors and complete mock GSA exchanges | Token persistence and live service verification |
 | Alternate anisette retry on -36607 | Complete-operation mismatch switches providers once and restarts the exchange; mock server verifies selection and bound; engine settings accept an alternate remote provider | UI controls and live verification |
@@ -84,6 +84,32 @@ fallback. `is_ours` remains false until signing-key persistence and public-key m
 Explicit revocation first checks that the serial occurs in the selected team's certificate list.
 No device or app-ID creation occurs automatically. A portal failure after GSA does not discard
 the authenticated in-memory token, so account state and team state remain distinguishable.
+
+## Local anisette
+
+`LocalAnisette` maps AOSKit's `X-Apple-MD`/`X-Apple-MD-M` to `X-Apple-I-MD`/`X-Apple-I-MD-M`, adds
+the serial (`X-Apple-I-SRL-NO`), machine UDID (`X-Mme-Device-Id`), locale language code, time-zone
+abbreviation and client time, then the Go host's `X-Apple-I-MD-LU = upper(hex(SHA-256(UDID)))`,
+`X-Apple-I-MD-RINFO = 17106176` and `X-MMe-Client-Info = <hw.model> <macOS;version;build>
+<com.apple.AuthKit/1 (com.apple.dt.Xcode/3594.4.19)>`. `sl-macos` loads
+`AOSKit.framework`, requires `AOSUtilities` and its three class methods (recovered "AOS
+incompatible"), and reads the model from `sysctl`, the OS version from `SystemVersion.plist`
+and, for Apple Silicon targets, the provisioning UDID from System Information
+(`provisioning_UDID`, the value `get_m1_udid` reads through MobileGestalt). Only the AOSKit
+module uses `unsafe` Objective-C messages.
+
+Selection follows the recovered chain at the start of each job: a local provider is probed; if
+it produces no headers, the configured alternate provider is used with a warning, else the job
+fails with guidance to configure a remote provider. Portal requests use the same selection, so a
+session keeps one machine identity while local anisette remains unavailable. Login emits
+`Fact::AnisetteDevice` with the recovered "shown in your Apple ID as" description.
+
+On 2026-09-28 on this Mac (Mac16,5, macOS 27.2 26B5091g), AOSKit loaded and `AOSUtilities`
+responded to all three selectors, but `retrieveOTPHeadersForDSID:@"-2"` returned an empty
+dictionary and AOSKit logged `Info request failed: -45070` for the unsigned test process and the
+`sideport` executable. Local anisette is therefore unavailable here; whether a differently
+signed or entitled process succeeds is unknown. Header assembly and the fallback chain are
+covered by unit and engine tests with injected machine values.
 
 ## Account state and provisioning policy
 

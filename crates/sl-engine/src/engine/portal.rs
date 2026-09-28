@@ -1,6 +1,6 @@
 //! Session-backed developer-portal account operations.
 
-use super::{Inner, auth, state};
+use super::{Inner, anisette, auth, state};
 use crate::engine::auth::team_summary;
 use crate::error::{EngineError, Result};
 use crate::job::{Fact, JobContext, PromptKind, PromptReply, Stage, TeamChoice};
@@ -67,7 +67,7 @@ impl PortalJob {
             None => (auth::renew_session(&inner, &context, &apple_id).await?, true),
         };
 
-        let provider = auth::session_provider(&inner, &session)?;
+        let provider = anisette::for_session(&inner, &session, Some(&context)).await?;
         let client = PortalClient::with_origin(&inner.portal_origin).map_err(portal_error)?;
 
         Ok(Self { inner, context, apple_id, session, provider, client, teams, default_team, renewed })
@@ -102,7 +102,7 @@ impl PortalJob {
                 self.context.warn("Apple developer session expired; signing in again.");
 
                 self.session = auth::renew_session(&self.inner, &self.context, &self.apple_id).await?;
-                self.provider = auth::session_provider(&self.inner, &self.session)?;
+                self.provider = anisette::for_session(&self.inner, &self.session, Some(&self.context)).await?;
                 self.renewed = true;
 
                 Ok(None)

@@ -1,16 +1,13 @@
 //! Non-demo GSA login, session renewal and the engine prompt bridge.
 
-use super::{Inner, LiveAccount, state};
+use super::{Inner, LiveAccount, anisette, state};
 use crate::error::{EngineError, Result};
 use crate::job::{Fact, JobContext, PromptKind, PromptReply, Stage};
-use crate::types::{AccountSummary, AnisetteSetting, TeamKind, TeamSummary};
+use crate::types::{AccountSummary, TeamKind, TeamSummary};
 use chrono::Utc;
 use futures::FutureExt;
 use futures::future::BoxFuture;
-use sl_apple::anisette::RemoteAnisette;
-use sl_apple::auth::{
-    AnisetteProvider, AnisetteSources, AuthClient, AuthSession, FactorDelegate, FactorPrompt, FactorReply,
-};
+use sl_apple::auth::{AnisetteSources, AuthClient, AuthSession, FactorDelegate, FactorPrompt, FactorReply};
 use sl_apple::portal::{PortalAccess, PortalClient, TeamKind as PortalTeamKind};
 use std::sync::Arc;
 use zeroize::Zeroizing;
@@ -55,7 +52,7 @@ pub(super) async fn login(
     context.checkpoint()?;
 
     let (session, password, source) = authenticate_with_fallback(&inner, &context, &apple_id, password, source).await?;
-    let provider = session_provider(&inner, &session)?;
+    let provider = anisette::for_session(&inner, &session, Some(&context)).await?;
 
     let portal = PortalClient::with_origin(&inner.portal_origin).map_err(auth_error)?;
     let cancellation = context.cancellation_token();
@@ -193,9 +190,12 @@ async fn authenticate(
     apple_id: &str,
     password: &Zeroizing<String>,
 ) -> std::result::Result<AuthSession, AuthFailure> {
-    let settings = inner.settings.read().clone();
-    let primary = provider(&settings.anisette).map_err(AuthFailure::Other)?;
-    let alternate = settings.alternate_anisette.as_ref().map(provider).transpose().map_err(AuthFailure::Other)?;
+    let primary = anisette::primary(inner, Some(context)).await.map_err(AuthFailure::Other)?;
+    let alternate = anisette::alternate(inner).map_err(AuthFailure::Other)?;
+
+    if let Ok(description) = anisette::describe(primary.as_ref(), apple_id).await {
+        context.fact(Fact::AnisetteDevice(description));
+    }
 
     let mut sources = AnisetteSources::new(primary);
 
@@ -221,22 +221,6 @@ async fn authenticate(
     }
 }
 
-/// The anisette provider a session was established with; portal requests must use the same one.
-pub(super) fn session_provider(inner: &Inner, session: &AuthSession) -> Result<Arc<dyn AnisetteProvider>> {
-    let settings = inner.settings.read().clone();
-
-    if session.using_alternate() {
-        let alternate = settings
-            .alternate_anisette
-            .as_ref()
-            .ok_or_else(|| EngineError::Anisette("alternate anisette provider is no longer configured".into()))?;
-
-        return provider(alternate);
-    }
-
-    provider(&settings.anisette)
-}
-
 pub(super) fn team_summary(team: sl_apple::portal::TeamRecord) -> TeamSummary {
     let kind = match team.kind {
         PortalTeamKind::Free => TeamKind::Free,
@@ -246,17 +230,6 @@ pub(super) fn team_summary(team: sl_apple::portal::TeamRecord) -> TeamSummary {
     };
 
     TeamSummary { team_id: team.team_id, name: team.name, kind }
-}
-
-pub(super) fn provider(setting: &AnisetteSetting) -> Result<Arc<dyn AnisetteProvider>> {
-    match setting {
-        AnisetteSetting::Remote { url } => {
-            let remote = RemoteAnisette::new(url).map_err(|error| EngineError::Anisette(error.to_string()))?;
-
-            Ok(Arc::new(remote))
-        }
-        AnisetteSetting::Local => Err(EngineError::Unsupported("local anisette bridge is not implemented yet".into())),
-    }
 }
 
 fn auth_error(error: sl_apple::Error) -> EngineError {

@@ -28,7 +28,7 @@ here (revocation, entitlement policy, device state).
 
 | Workstream | Open work | Required evidence / source |
 |---|---|---|
-| Account/session | Native AOSKit and Mail/AltServer anisette, kbsync and fallback; legacy IDMS. Done: keychain/file-persisted sessions, remembered passwords, restart restore, recovered `sessions.json` import, 1100 renewal. | Native bridge and dated live checks. [APPLE.md](APPLE.md), [AUTH_NOTES](../../notes/AUTH_NOTES.md). |
+| Account/session | Done: persisted sessions, remembered passwords, restart restore, recovered `sessions.json` import, 1100 renewal, AOSKit local anisette bridge with per-job fallback (AOSKit refused requests on this Mac with -45070). Open: Mail/AltServer plug-in anisette, kbsync, legacy IDMS, live checks. | Dated live checks. [APPLE.md](APPLE.md), [AUTH_NOTES](../../notes/AUTH_NOTES.md). |
 | Key/certificates | Done: durable key and machine UUID, CSR flow, reuse by public key, `is_ours`, confirmed 7460 revocation. Open: live portal confirmation. | Dated live checks. [APPLE.md](APPLE.md), `crates/sl-engine/src/engine/provision.rs`. |
 | Portal provisioning | Done against the fake portal: device registration, App ID reuse/creation/quota, bundle-ID policy, tvOS selection, profile download with trust verification, per-extension option. Open: device-target wiring (needs `sl-device`), profile renewal via refresh, live checks. | Live account/device checks. [APPLE.md](APPLE.md), [MOBDEV_NOTES](../../notes/MOBDEV_NOTES.md). |
 | Apple ID signing | Done: exports and device installs through provisioning (fixtures); native codesign/OpenSSL checks. Open: physical installation. | Physical installation with an authorized account. [ENGINE.md](ENGINE.md), `crates/sl-engine/src/engine/sideload.rs`. |

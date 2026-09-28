@@ -6499,6 +6499,7 @@ dependencies = [
  "sl-codesign",
  "sl-device",
  "sl-macho",
+ "sl-macos",
  "sl-testkit",
  "tempfile",
  "thiserror 2.0.21",
@@ -6516,6 +6517,21 @@ version = "0.1.0"
 dependencies = [
  "proptest",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "sl-macos"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "objc2",
+ "objc2-foundation",
+ "plist",
+ "serde_json",
+ "sl-apple",
+ "thiserror 2.0.21",
+ "tokio",
+ "zeroize",
 ]
 
 [[package]]

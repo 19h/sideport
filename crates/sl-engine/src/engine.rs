@@ -3,6 +3,7 @@
 //! All async methods are executor-agnostic: work is spawned onto the engine's own tokio runtime and the
 //! returned future only awaits a oneshot, so gpui (or any executor) can drive it.
 
+mod anisette;
 mod auth;
 mod devices;
 mod files;
@@ -18,6 +19,7 @@ use crate::job::{JobContext, JobHandle};
 use crate::secrets::SecretStore;
 use crate::store::Store;
 use crate::types::*;
+pub use anisette::MachineAnisette;
 pub use devices::DeviceBackend;
 use futures::channel::oneshot;
 use parking_lot::{Mutex, RwLock};
@@ -46,6 +48,8 @@ pub struct EngineConfig {
     pub profile_trust: Option<sl_codesign::ProfileTrust>,
     /// Device layer (default: the system usbmuxd).
     pub device_backend: Option<DeviceBackend>,
+    /// Local anisette source (default: AOSKit on macOS, none elsewhere).
+    pub machine_anisette: Option<MachineAnisette>,
 }
 
 /// Notifications from the background refresh scheduler.
@@ -67,6 +71,7 @@ struct Inner {
     secrets: Box<dyn SecretStore>,
     profile_trust: sl_codesign::ProfileTrust,
     devices: devices::Devices,
+    machine: Option<Arc<dyn sl_apple::anisette::MachineSource>>,
     /// Serializes signing-key creation within this process; the store serializes processes.
     key_lock: Mutex<()>,
     accounts: Mutex<BTreeMap<String, LiveAccount>>,
@@ -178,6 +183,10 @@ impl Engine {
                 secrets,
                 profile_trust,
                 devices: devices::Devices::new(config.device_backend),
+                machine: config
+                    .machine_anisette
+                    .map(|MachineAnisette(source)| source)
+                    .or_else(anisette::default_machine),
                 key_lock: Mutex::new(()),
                 accounts: Mutex::new(accounts),
                 demo,
@@ -219,25 +228,25 @@ impl Engine {
     /// Fetch anisette with the given setting and describe the machine Apple will see.
     pub fn test_anisette(&self, setting: AnisetteSetting) -> impl Future<Output = Result<String>> + use<> {
         let demo = self.inner.demo.clone();
+        let inner = self.inner.clone();
 
         self.run(async move {
             if let Some(demo) = demo {
                 return demo.test_anisette(setting).await;
             }
 
-            match setting {
-                AnisetteSetting::Remote { url } => {
-                    let provider = sl_apple::anisette::RemoteAnisette::new(&url)
-                        .map_err(|error| EngineError::Anisette(error.to_string()))?;
-                    let headers =
-                        provider.headers(None).await.map_err(|error| EngineError::Anisette(error.to_string()))?;
+            // A remote check sends an empty `u` parameter, as the recovered client does.
+            if let AnisetteSetting::Remote { url } = &setting {
+                let remote = sl_apple::anisette::RemoteAnisette::new(url)
+                    .map_err(|error| EngineError::Anisette(error.to_string()))?;
+                let headers = remote.headers(None).await.map_err(|error| EngineError::Anisette(error.to_string()))?;
 
-                    Ok(headers.description())
-                }
-                AnisetteSetting::Local => {
-                    Err(EngineError::Unsupported("local anisette bridge is not implemented yet".into()))
-                }
+                return Ok(headers.description());
             }
+
+            let provider = anisette::provider(&inner, &setting)?;
+
+            anisette::describe(provider.as_ref(), "").await
         })
     }
 

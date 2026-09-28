@@ -26,7 +26,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             outcome(jobs::run(engine.start(install_spec(*arguments)), &Answers::default())?, json)
         }
         Command::Run { spec } => outcome(jobs::run(engine.start(read_spec(&spec)?), &Answers::default())?, json),
-        Command::Anisette { remote } => anisette(&engine, remote, json),
+        Command::Anisette { remote, local } => anisette(&engine, remote.filter(|_| !local), json),
         Command::Settings(command) => settings(&engine, command, json),
         Command::Account(command) => account(&engine, command, json),
         Command::Certificates { apple_id, revoke } => certificates(&engine, apple_id, revoke, json),
@@ -193,8 +193,9 @@ fn inspect(engine: &Engine, source: std::path::PathBuf, json: bool) -> Result<()
     Ok(())
 }
 
-fn anisette(engine: &Engine, remote: String, json: bool) -> Result<()> {
-    let description = block_on(engine.test_anisette(AnisetteSetting::Remote { url: remote }))?;
+fn anisette(engine: &Engine, remote: Option<String>, json: bool) -> Result<()> {
+    let setting = remote.map_or(AnisetteSetting::Local, |url| AnisetteSetting::Remote { url });
+    let description = block_on(engine.test_anisette(setting))?;
 
     print(&serde_json::json!({ "description": description }), json, |_| println!("{description}"))
 }

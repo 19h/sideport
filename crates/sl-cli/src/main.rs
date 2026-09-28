@@ -47,10 +47,13 @@ enum Command {
     Install(Box<InstallArgs>),
     /// Execute a serialized engine JobSpec.
     Run { spec: PathBuf },
-    /// Check a configured anisette service and describe its machine.
+    /// Check an anisette provider and describe the machine Apple will list.
     Anisette {
-        #[arg(long, value_name = "URL")]
-        remote: String,
+        #[arg(long, value_name = "URL", required_unless_present = "local", conflicts_with = "local")]
+        remote: Option<String>,
+        /// This Mac's own provisioning (AOSKit).
+        #[arg(long)]
+        local: bool,
     },
     /// Show or change settings.
     #[command(subcommand)]

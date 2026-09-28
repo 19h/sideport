@@ -1,4 +1,8 @@
-//! Validated machine-provisioning headers and the recovered remote GET protocol.
+//! Validated machine-provisioning headers, the recovered remote GET protocol and local anisette.
+
+mod local;
+
+pub use local::{LocalAnisette, MachineSource, MachineValues, machine_headers};
 
 use crate::{Error, Result, transport};
 use chrono::{DateTime, Utc};
