@@ -425,7 +425,13 @@ pub trait Backend: Connector {
 
     /// Pair and store the record with usbmuxd; the device shows "Trust This Computer?".
     fn pair<'a>(&'a self, udid: &'a str) -> BoxFuture<'a, Result<()>>;
+
+    /// Lines from the device's syslog relay until the stream is dropped.
+    fn syslog<'a>(&'a self, udid: &'a str) -> BoxFuture<'a, Result<LineStream>>;
 }
+
+/// Device log lines.
+pub type LineStream = std::pin::Pin<Box<dyn futures::Stream<Item = Result<String>> + Send>>;
 
 /// The system usbmuxd with `idevice` services.
 #[derive(Debug, Clone)]
@@ -485,6 +491,26 @@ impl Backend for IdeviceBackend {
     fn pair<'a>(&'a self, udid: &'a str) -> BoxFuture<'a, Result<()>> {
         async move { pair(self.mux(), udid).await }.boxed()
     }
+
+    fn syslog<'a>(&'a self, udid: &'a str) -> BoxFuture<'a, Result<LineStream>> {
+        async move { syslog(&self.mux().provider(udid, false).await?).await }.boxed()
+    }
+}
+
+/// The syslog relay (`com.apple.syslog_relay`): NUL/newline-delimited lines.
+pub async fn syslog(provider: &UsbmuxdProvider) -> Result<LineStream> {
+    let client = idevice::syslog_relay::SyslogRelayClient::connect(provider).await?;
+
+    let lines = futures::stream::unfold(Some(client), |state| async move {
+        let mut client = state?;
+
+        match client.next().await {
+            Ok(line) => Some((Ok(line.trim_end_matches(['\0', '\n']).to_owned()), Some(client))),
+            Err(error) => Some((Err(DeviceError::from(error)), None)),
+        }
+    });
+
+    Ok(Box::pin(lines))
 }
 
 /// Lockdown pairing (the device asks "Trust This Computer?"), then store the record with

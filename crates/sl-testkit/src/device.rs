@@ -5,10 +5,13 @@
 //! contract, not installd's validation.
 
 use futures::FutureExt;
+use futures::StreamExt;
 use futures::future::BoxFuture;
 use parking_lot::{Mutex, MutexGuard};
 use sl_device::install::{InstallStatus, Session, Staging};
-use sl_device::{Attached, Backend, Connector, DeviceError, DeviceValues, EventStream, InstalledApp, Link, Result};
+use sl_device::{
+    Attached, Backend, Connector, DeviceError, DeviceValues, EventStream, InstalledApp, LineStream, Link, Result,
+};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -28,6 +31,8 @@ pub struct DeviceState {
     pub apps: Vec<InstalledApp>,
     pub profiles: Vec<Vec<u8>>,
     pub removed_profiles: Vec<String>,
+    /// Lines served by the syslog relay; the stream then stays open.
+    pub syslog: Vec<String>,
     pub uninstalled: Vec<String>,
     pub paired: bool,
     /// Interrupt the next upload after this many bytes (the partial data stays staged).
@@ -164,6 +169,18 @@ impl Backend for FakeDevice {
             self.state.lock().removed_profiles.push(uuid.into());
 
             Ok(())
+        }
+        .boxed()
+    }
+
+    fn syslog<'a>(&'a self, udid: &'a str) -> BoxFuture<'a, Result<LineStream>> {
+        async move {
+            self.check(udid)?;
+
+            let lines = self.state.lock().syslog.clone();
+            let stream = futures::stream::iter(lines.into_iter().map(Ok)).chain(futures::stream::pending());
+
+            Ok(Box::pin(stream) as LineStream)
         }
         .boxed()
     }

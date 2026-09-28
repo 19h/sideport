@@ -225,6 +225,13 @@ enum DeviceCommand {
     Pair {
         udid: String,
     },
+    /// Print the device log until interrupted.
+    Syslog {
+        udid: String,
+        /// Only lines containing this text (case-insensitive).
+        #[arg(long)]
+        filter: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]

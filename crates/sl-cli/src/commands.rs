@@ -389,6 +389,24 @@ fn device(engine: &Engine, command: DeviceCommand, json: bool) -> Result<()> {
             print(&serde_json::json!({ "removed": uuid }), json, |_| println!("Removed profile {uuid}"))
         }
 
+        DeviceCommand::Syslog { udid, filter } => {
+            let job = engine.syslog(udid, filter);
+            let events = job.events();
+            let cancellation = job.cancellation_token();
+
+            ctrlc::set_handler(move || cancellation.cancel()).context("register interrupt handler")?;
+
+            while let Ok(event) = block_on(events.recv()) {
+                if let sl_engine::JobEvent::Log { message, .. } = event {
+                    println!("{message}");
+                }
+            }
+
+            block_on(job.result())?;
+
+            Ok(())
+        }
+
         DeviceCommand::Pair { udid } => {
             eprintln!("Unlock the device and confirm \"Trust This Computer?\".");
             block_on(engine.pair_device(udid.clone()))?;

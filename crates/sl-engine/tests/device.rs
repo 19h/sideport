@@ -399,3 +399,27 @@ async fn apple_silicon_installs_register_the_mac_and_place_a_tagged_wrapper() {
     assert!(matches!(run(&engine, adhoc).result, Err(EngineError::Unsupported(_))));
     assert!(harness.device.state().installed.is_empty(), "nothing went to the iPhone fixture");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn syslog_jobs_filter_lines_until_cancelled() {
+    let harness = Harness::new().await;
+    harness.device.state().syslog =
+        vec!["kernel: boot".into(), "SpringBoard: App launched".into(), "springboard: second".into()];
+
+    let engine = harness.engine();
+    let job = engine.syslog(UDID.into(), Some("SPRINGBOARD".into()));
+    let events = job.events();
+
+    let mut lines = Vec::new();
+
+    while lines.len() < 2 {
+        if let JobEvent::Log { message, .. } = events.recv().await.expect("log line") {
+            lines.push(message);
+        }
+    }
+
+    job.cancel();
+    job.result().await.expect("cancelled stream ends cleanly");
+
+    assert_eq!(lines, ["SpringBoard: App launched", "springboard: second"]);
+}

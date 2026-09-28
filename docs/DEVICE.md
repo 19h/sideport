@@ -79,6 +79,14 @@ data directory run it once (claims older than one hour are taken over), and runs
 interaction: prompts are declined, so second factors, revocations and retry questions fail the
 refresh instead of waiting.
 
+## Device log
+
+`Engine::syslog(udid, filter)` streams `com.apple.syslog_relay` lines (NUL/newline delimited)
+as job log events until the job is cancelled; a filter keeps lines containing it,
+case-insensitively (the recovered GUI's syslog viewer filters). `sideport device syslog UDID
+[--filter TEXT]` prints them until Ctrl-C. On 2026-09-28 the real USB iPhone produced 864 lines in
+about eight seconds through the CLI (count only recorded).
+
 ## Apple Silicon Mac
 
 On Apple Silicon the device list includes this Mac (`device_class` `Mac`, model name "This

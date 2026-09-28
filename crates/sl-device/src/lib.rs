@@ -12,7 +12,7 @@ pub mod install;
 pub mod models;
 pub mod mux;
 
-pub use backend::{Backend, DeviceValues, IdeviceBackend, IdeviceConnector, InstalledApp};
+pub use backend::{Backend, DeviceValues, IdeviceBackend, IdeviceConnector, InstalledApp, LineStream};
 pub use error::{DeviceError, Recovery, Result};
 pub use install::{
     Connector, Delegate, DeviceWait, FilePackage, InstallRequest, Package, PackageReader, Phase, Question,

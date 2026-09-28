@@ -260,6 +260,36 @@ pub(crate) async fn pair(inner: &Inner, udid: &str) -> Result<()> {
     Ok(())
 }
 
+/// Forward syslog lines as job log events until the job is cancelled. Lines not containing
+/// `filter` (case-insensitive) are skipped.
+pub(crate) async fn syslog(
+    inner: &Inner,
+    context: &crate::job::JobContext,
+    udid: &str,
+    filter: Option<&str>,
+) -> Result<()> {
+    let mut lines = inner.devices.backend()?.syslog(udid).await.map_err(device_error)?;
+    let filter = filter.map(str::to_lowercase).filter(|filter| !filter.is_empty());
+    let cancellation = context.cancellation_token();
+
+    loop {
+        let line = tokio::select! {
+            line = lines.next() => line,
+            () = cancellation.cancelled() => return Ok(()),
+        };
+
+        let Some(line) = line else {
+            return Ok(());
+        };
+
+        let line = line.map_err(device_error)?;
+
+        if filter.as_ref().is_none_or(|filter| line.to_lowercase().contains(filter)) {
+            context.info(line);
+        }
+    }
+}
+
 pub(crate) fn device_error(error: DeviceError) -> EngineError {
     match error {
         DeviceError::Cancelled => EngineError::Cancelled,

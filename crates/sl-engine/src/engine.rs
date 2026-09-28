@@ -360,6 +360,14 @@ impl Engine {
         })
     }
 
+    /// Stream the device syslog as job log events until the job is cancelled; `filter` keeps
+    /// only lines containing it (case-insensitive).
+    pub fn syslog(&self, udid: String, filter: Option<String>) -> JobHandle<()> {
+        let inner = self.inner.clone();
+
+        self.job(move |context| async move { devices::syslog(&inner, &context, &udid, filter.as_deref()).await })
+    }
+
     /// Start pairing (shows the "Trust This Computer?" dialog on the device).
     pub fn pair_device(&self, udid: String) -> impl Future<Output = Result<()>> + use<> {
         let demo = self.inner.demo.clone();
