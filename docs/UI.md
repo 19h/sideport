@@ -104,8 +104,9 @@ and offers:
   the app list is read again. Unchecking it, choosing another device or closing the window drops
   the job, which cancels it; an unexpected end is reported.
 
-The demo engine simulates none of these utilities (calling them would reach the system usbmuxd),
-so the demo shows the connection kind only; this Mac also has none.
+The desktop shows only the connection kind in the demo; this Mac also has no utilities. (The
+demo engine now answers these calls with simulations instead of reaching the system usbmuxd, so
+the controls could be enabled in the demo later.)
 
 Installations shows each tracked installation's icon, name, version, bundle identifier, device,
 Apple ID, team, remaining time (whole days, hours on the final day, "Expired N days ago" in the
