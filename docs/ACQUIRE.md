@@ -39,8 +39,10 @@ Deliberate differences: a resume answered with 200 (the server ignored `Range`) 
 file instead of appending a second copy; rejected complete downloads (digest or enrichment) are
 retried at most three times instead of indefinitely; the user agent is `sideport/<version>`
 instead of `sideloadly/<version>@darwin`. App Store deeplinks are parsed but reported as
-unsupported: the recovered Store client authenticates with kbsync from the Mail plug-in, which the
-recovered client disables on macOS Sonoma and later.
+unsupported, and the Store client is excluded from this implementation: the recovered client
+impersonates Apple's iTunes client, authenticates with kbsync client-attestation tokens produced
+through the Mail plug-in (which it disables on macOS Sonoma and later), and downloads
+FairPlay-protected packages with their decryption metadata.
 
 ## Remote and special injection sources
 
