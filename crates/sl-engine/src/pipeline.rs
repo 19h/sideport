@@ -247,6 +247,8 @@ pub(crate) fn export(
 
         bundle_id = archive.bundle().map_err(bundle_error)?.identifier().map_err(bundle_error)?.to_owned();
         context.fact(Fact::BundleId(bundle_id.clone()));
+        context.verify_inputs()?;
+
         context.stage(Stage::Packaging);
         archive.save(&path, OutputLayout::Ipa, PackOptions::default(), control).map_err(bundle_error)?;
     }
@@ -529,6 +531,8 @@ fn copy_original(source: &Path, destination: &Path, context: &JobContext) -> Res
     if copied != total {
         return Err(EngineError::Storage("source changed during original export".into()));
     }
+
+    context.verify_inputs()?;
 
     if let Some(metadata) = existing {
         temporary.as_file().set_permissions(metadata.permissions()).map_err(storage_error)?;

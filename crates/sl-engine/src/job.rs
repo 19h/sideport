@@ -243,6 +243,8 @@ pub struct JobContext {
     next_prompt: std::sync::Arc<std::sync::atomic::AtomicU64>,
     progress: Arc<parking_lot::Mutex<ProgressState>>,
     backlog: Arc<parking_lot::Mutex<Backlog>>,
+    /// Identities of the job's local inputs, checked before output is committed.
+    inputs: Arc<parking_lot::Mutex<Option<(crate::snapshot::InputSnapshot, crate::types::JobSpec)>>>,
 }
 
 /// Lossy events dropped while the receiver was behind.
@@ -270,6 +272,7 @@ impl JobContext {
             next_prompt: Default::default(),
             progress: Default::default(),
             backlog: Default::default(),
+            inputs: Default::default(),
         };
 
         (ctx, rx, cancel)
@@ -370,6 +373,24 @@ impl JobContext {
 
     pub fn fact(&self, fact: Fact) {
         self.deliver(JobEvent::Fact(fact));
+    }
+
+    /// Record the identities of `spec`'s local inputs for [`JobContext::verify_inputs`].
+    pub(crate) fn guard_inputs(&self, spec: &crate::types::JobSpec) -> Result<(), EngineError> {
+        let snapshot = crate::snapshot::InputSnapshot::capture(spec)?;
+        *self.inputs.lock() = Some((snapshot, spec.clone()));
+
+        Ok(())
+    }
+
+    /// Fail when a guarded input changed since the job recorded it; nothing to check otherwise.
+    pub(crate) fn verify_inputs(&self) -> Result<(), EngineError> {
+        let guarded = self.inputs.lock().clone();
+
+        match guarded {
+            Some((snapshot, spec)) => snapshot.verify(&spec),
+            None => Ok(()),
+        }
     }
 
     pub fn is_cancelled(&self) -> bool {

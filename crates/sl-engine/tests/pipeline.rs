@@ -411,3 +411,35 @@ fn engines_sharing_a_data_directory_keep_each_others_setting_changes() {
     std::fs::write(temporary.path().join("data/settings.json"), b"{ not json").expect("corrupt");
     assert_eq!(desktop.settings(), merged, "unreadable settings keep the last good ones");
 }
+
+#[test]
+fn an_input_rewritten_while_the_job_runs_fails_the_job_before_output() {
+    let temporary = tempfile::tempdir().expect("tempdir");
+    let root = temporary.path().join("Test.app");
+    common::synthetic_bundle(&root, "com.example.test", "Test", "APPL");
+    let output = temporary.path().join("output.ipa");
+    let engine = engine(temporary.path());
+
+    let handle = engine.start(spec(root.clone(), None, SigningMode::AdHoc));
+    let events = handle.events();
+
+    block_on(async {
+        while let Ok(event) = events.recv().await {
+            if let JobEvent::Prompt(prompt) = event {
+                // Same length, new bytes: only the file's times reveal the rewrite.
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                let info = fs::read(root.join("Info.plist")).expect("plist");
+                fs::write(root.join("Info.plist"), &info).expect("rewrite");
+
+                prompt.answer(PromptReply::Path(output.clone()));
+            }
+        }
+    });
+
+    let result = block_on(handle.result());
+    assert!(
+        matches!(&result, Err(EngineError::InvalidApp(message)) if message.contains("Info.plist")),
+        "{result:?}"
+    );
+    assert!(!output.exists(), "no output is written from a changed input");
+}

@@ -12,6 +12,7 @@ pub mod job;
 mod pipeline;
 mod secrets;
 mod settings;
+mod snapshot;
 mod store;
 pub mod types;
 

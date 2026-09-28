@@ -153,8 +153,16 @@ prompt cancellation, subscriber closure, and concurrent progress reduction.
 
 - A1: Input files, symlinks, and external injection/replacement sources remain stable while read.
   Dependent results: source fidelity, header/metadata consistency, deterministic output, path checks.
-  Probes: CRC/size checks, source-byte comparisons, symlink escape tests, nonregular-file rejection;
-  same-size mutations and TOCTOU changes still need snapshot/detection tests.
+  Probes: CRC/size checks, source-byte comparisons, symlink escape tests, nonregular-file rejection.
+  Every job records the identity (kind, device, inode, length, modification and status-change
+  times, symlink target) of its source (each entry of a directory), entitlements, injected items
+  and replacement files when it starts (after a download), and records them again before it
+  commits an export, uploads a prepared package, places a Mac app, and after uploading an unchanged
+  IPA; a difference fails the job with the changed path and writes no output. Fixtures: same-size
+  rewrites, additions, removals, symlink retargets, and an Info.plist rewritten while an export
+  waits at its save prompt. Metadata identity does not detect a writer that restores both times
+  (requires privileges) or a filesystem without status-change times; an extended-attribute change
+  by another program also fails the job.
 - A2: Generated fixtures represent the implemented format cases. Dependent results: inspection,
   encoding, CgBI, and native signing claims. Probes: both widths/orders, fat variants, malformed
   extents/CRC/dimensions, native codesign/execution/tamper checks. Real device/profile trust is unverified.

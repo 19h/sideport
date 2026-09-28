@@ -28,6 +28,8 @@ const STREAM_DEPTH: usize = 8;
 
 pub(super) async fn run(inner: Arc<Inner>, context: JobContext, mut spec: JobSpec) -> Result<JobOutcome> {
     if !acquire::is_remote(&spec.source) {
+        context.guard_inputs(&spec)?;
+
         return dispatch(inner, context, spec).await;
     }
 
@@ -36,7 +38,11 @@ pub(super) async fn run(inner: Arc<Inner>, context: JobContext, mut spec: JobSpe
     let downloaded = acquire::fetch(&inner, &context, &source).await?;
 
     spec.source = downloaded.clone();
-    let outcome = dispatch(inner, context, spec).await;
+
+    let outcome = match context.guard_inputs(&spec) {
+        Ok(()) => dispatch(inner, context, spec).await,
+        Err(error) => Err(error),
+    };
     let _ = std::fs::remove_file(&downloaded);
 
     outcome
@@ -209,6 +215,9 @@ async fn install_job(inner: Arc<Inner>, context: JobContext, spec: JobSpec) -> R
 
     installed.map_err(device_error)?;
 
+    // An unchanged IPA is uploaded straight from the source, so check it again after the upload.
+    context.verify_inputs()?;
+
     context.stage(Stage::Done);
     context.info("Done.");
 
@@ -270,6 +279,7 @@ async fn mac_install(inner: Arc<Inner>, context: JobContext, spec: JobSpec, mac:
             let mut archive = BundleArchive::unpack(&spec.source, ArchiveLimits::default(), control)
                 .map_err(pipeline::bundle_error)?;
             pipeline::prepare(&mut archive, &context, &spec.options, &plan, control)?;
+            context.verify_inputs()?;
 
             let info = archive.bundle().map_err(pipeline::bundle_error)?.info().clone();
             let text = |key: &str| info.get(key).and_then(plist::Value::as_string).filter(|value| !value.is_empty());
@@ -333,6 +343,7 @@ async fn prepare_package(context: &JobContext, spec: &JobSpec, plan: SigningPlan
 
     if original_ipa {
         context.info("No metadata changed, will just install");
+        context.verify_inputs()?;
 
         let package = FilePackage::open(&spec.source).map_err(device_error)?;
 
@@ -372,6 +383,7 @@ fn prepare_blocking(context: &JobContext, spec: &JobSpec, plan: &SigningPlan, st
     let bundle_id =
         archive.bundle().map_err(pipeline::bundle_error)?.identifier().map_err(pipeline::bundle_error)?.to_owned();
     context.fact(crate::job::Fact::BundleId(bundle_id.clone()));
+    context.verify_inputs()?;
 
     if spec.options.stream_upload {
         let estimate = stream_estimate(&archive.bundle_path());
