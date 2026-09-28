@@ -17,7 +17,8 @@ mod store;
 pub mod types;
 
 pub use engine::{
-    DeviceBackend, Engine, EngineConfig, IpcServer, MacTarget, MacTargetSetting, MachineAnisette, RefreshEvent,
+    DdiConfig, DdiMount, DeviceBackend, Engine, EngineConfig, IpcServer, MacTarget, MacTargetSetting, MachineAnisette,
+    RefreshEvent,
 };
 pub use error::{EngineError, Result};
 pub use job::{Fact, JobContext, JobEvent, JobHandle, LogLevel, Prompt, PromptKind, PromptReply, Stage, TeamChoice};

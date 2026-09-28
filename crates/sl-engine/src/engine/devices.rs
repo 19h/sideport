@@ -290,12 +290,163 @@ pub(crate) async fn syslog(
     }
 }
 
+/// Developer-disk-image endpoints for [`crate::EngineConfig`]; `None` uses the recovered mirrors.
+#[derive(Debug, Clone, Default)]
+pub struct DdiConfig {
+    pub github_api: Option<String>,
+    pub raw_content: Option<String>,
+    pub tss_endpoint: Option<String>,
+}
+
+impl DdiConfig {
+    fn catalog(&self) -> sl_device::Catalog {
+        let mut catalog = sl_device::Catalog::default();
+
+        if let Some(api) = &self.github_api {
+            catalog.github_api = api.clone();
+        }
+
+        if let Some(raw) = &self.raw_content {
+            catalog.raw_content = raw.clone();
+        }
+
+        catalog
+    }
+
+    fn tss(&self) -> sl_device::TssClient {
+        match &self.tss_endpoint {
+            Some(endpoint) => sl_device::TssClient::new(endpoint.clone()),
+            None => sl_device::TssClient::default(),
+        }
+    }
+}
+
+/// Outcome of a Developer Disk Image mount.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DdiMount {
+    /// A developer image was already mounted (nothing was downloaded or uploaded).
+    pub already_mounted: bool,
+    /// The personalized (iOS 17+) flow was used.
+    pub personalized: bool,
+}
+
+/// Download (or reuse the cache) and mount the Developer Disk Image matching the device version.
+pub(crate) async fn mount_developer_image(
+    inner: &Inner,
+    context: &crate::job::JobContext,
+    udid: &str,
+) -> Result<DdiMount> {
+    let backend = inner.devices.backend()?;
+    let cancel = context.cancellation_token();
+
+    context.stage(crate::Stage::Preparing);
+
+    let values = backend.values(udid).await.map_err(device_error)?;
+    let personalized = sl_device::ddi::is_personalized(&values.product_version);
+
+    let store = sl_device::Store::new(inner.data_dir.join("developer-disk-images"));
+    let catalog = inner.ddi.catalog();
+
+    context.info(format!("Resolving a Developer Disk Image for iOS {}", values.product_version));
+
+    let plan = if personalized {
+        store.personalized(&catalog, &cancel).await
+    } else {
+        store.legacy(&catalog, &values.product_version, &cancel).await
+    }
+    .map_err(device_error)?;
+
+    context.stage(crate::Stage::Installing);
+
+    let mut mounter = backend.image_mounter(udid).await.map_err(device_error)?;
+    let tss = inner.ddi.tss();
+    let log = |message: &str| context.info(message.to_owned());
+
+    let outcome = sl_device::ddi::mount(mounter.as_mut(), &tss, &plan, &log).await.map_err(device_error)?;
+
+    Ok(DdiMount { already_mounted: matches!(outcome, sl_device::Outcome::AlreadyMounted(_)), personalized })
+}
+
+/// Enable JIT for an installed bundle: mount the developer image, then launch or attach it
+/// through debugserver and detach so it keeps running (recovered `StartJIT`).
+pub(crate) async fn enable_jit(
+    inner: &Inner,
+    context: &crate::job::JobContext,
+    udid: &str,
+    bundle_id: &str,
+    launch: bool,
+) -> Result<()> {
+    mount_developer_image(inner, context, udid).await?;
+
+    let backend = inner.devices.backend()?;
+    let app = backend.app_launch(udid, bundle_id).await.map_err(device_error)?;
+
+    context.info(format!("Enabling JIT for {bundle_id}"));
+
+    let mut debugger = backend.debugserver(udid).await.map_err(device_error)?;
+
+    sl_device::jit::enable_jit(debugger.as_mut(), &app, launch).await.map_err(device_error)
+}
+
+/// Repair pairing: unpair, then pair again (the device shows "Trust This Computer?"). Emits
+/// progress the GUI can drive (recovered `RepairPairing`).
+pub(crate) async fn repair_pairing(inner: &Inner, context: &crate::job::JobContext, udid: &str) -> Result<()> {
+    let backend = inner.devices.backend()?;
+
+    context.info("Removing the existing pairing");
+    backend.unpair(udid).await.map_err(device_error)?;
+    inner.devices.values.lock().remove(udid);
+
+    context.info("Reconnect the device if needed, then confirm \"Trust This Computer?\"");
+
+    let paired = tokio::time::timeout(PAIRING_TIMEOUT, backend.pair(udid)).await.map_err(|_| {
+        EngineError::Device("the device did not answer \"Trust This Computer?\" within two minutes".into())
+    })?;
+
+    paired.map_err(device_error)?;
+
+    context.info("Pairing repaired");
+
+    Ok(())
+}
+
+/// One heartbeat round trip; the interval proves the device (network or tvOS included) is
+/// reachable and keeps its services open.
+pub(crate) async fn heartbeat(inner: &Inner, udid: &str) -> Result<u64> {
+    inner.devices.backend()?.heartbeat(udid).await.map_err(device_error)
+}
+
+/// Forward device notifications as job log events until the job is cancelled.
+pub(crate) async fn notifications(
+    inner: &Inner,
+    context: &crate::job::JobContext,
+    udid: &str,
+    names: Vec<String>,
+) -> Result<()> {
+    let mut stream = inner.devices.backend()?.observe(udid, &names).await.map_err(device_error)?;
+    let cancellation = context.cancellation_token();
+
+    loop {
+        let notification = tokio::select! {
+            notification = stream.next() => notification,
+            () = cancellation.cancelled() => return Ok(()),
+        };
+
+        match notification {
+            Some(notification) => context.info(notification.map_err(device_error)?),
+            None => return Ok(()),
+        }
+    }
+}
+
 pub(crate) fn device_error(error: DeviceError) -> EngineError {
     match error {
         DeviceError::Cancelled => EngineError::Cancelled,
         DeviceError::NotConnected(udid) => EngineError::DeviceUnavailable(format!("device {udid} is not connected")),
         DeviceError::MuxUnavailable(message) => EngineError::DeviceUnavailable(message),
         error @ (DeviceError::Install { .. } | DeviceError::InstallRetry(_)) => EngineError::Install(error.to_string()),
+        error @ DeviceError::Unsupported(_) => EngineError::Unsupported(error.to_string()),
+        error @ DeviceError::Remote(_) => EngineError::Network(error.to_string()),
         error => EngineError::Device(error.to_string()),
     }
 }

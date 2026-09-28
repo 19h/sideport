@@ -24,7 +24,7 @@ use crate::secrets::SecretStore;
 use crate::store::Store;
 use crate::types::*;
 pub use anisette::MachineAnisette;
-pub use devices::DeviceBackend;
+pub use devices::{DdiConfig, DdiMount, DeviceBackend};
 use futures::channel::oneshot;
 pub use ipc::IpcServer;
 pub use mac::{MacTarget, MacTargetSetting};
@@ -64,6 +64,8 @@ pub struct EngineConfig {
     pub autostart_dir: Option<PathBuf>,
     /// Private-service endpoints and feature-token key (default: none; nothing is contacted).
     pub services: Option<sl_services::ServiceConfig>,
+    /// Developer Disk Image endpoints (default: the recovered GitHub mirrors and Apple's TSS).
+    pub ddi: devices::DdiConfig,
 }
 
 /// Refresh notifications kept for a receiver that is not reading.
@@ -93,6 +95,7 @@ struct Inner {
     machine: Option<Arc<dyn sl_apple::anisette::MachineSource>>,
     mac_setting: MacTargetSetting,
     autostart_dir: Option<PathBuf>,
+    ddi: devices::DdiConfig,
     mac: std::sync::OnceLock<Option<MacTarget>>,
     /// Private-service client (updates, feature tokens); `None` when nothing is configured.
     services: Option<sl_services::Services>,
@@ -286,6 +289,7 @@ impl Engine {
                 mac: std::sync::OnceLock::new(),
                 services,
                 autostart_dir: config.autostart_dir.or_else(crate::autostart::default_directory),
+                ddi: config.ddi,
                 devices: devices::Devices::new(config.device_backend),
                 machine: config
                     .machine_anisette
@@ -550,6 +554,41 @@ impl Engine {
                 None => devices::pair(&inner, &udid).await,
             }
         })
+    }
+
+    /// Repair pairing (unpair, then pair again with the trust dialog); reports typed progress.
+    pub fn repair_pairing(&self, udid: String) -> JobHandle<()> {
+        let inner = self.inner.clone();
+
+        self.job(move |context| async move { devices::repair_pairing(&inner, &context, &udid).await })
+    }
+
+    /// Download (or reuse the cache) and mount the Developer Disk Image for the device version.
+    pub fn mount_developer_image(&self, udid: String) -> JobHandle<DdiMount> {
+        let inner = self.inner.clone();
+
+        self.job(move |context| async move { devices::mount_developer_image(&inner, &context, &udid).await })
+    }
+
+    /// Enable JIT for an installed bundle (mounts the developer image, then launches or attaches).
+    pub fn enable_jit(&self, udid: String, bundle_id: String, launch: bool) -> JobHandle<()> {
+        let inner = self.inner.clone();
+
+        self.job(move |context| async move { devices::enable_jit(&inner, &context, &udid, &bundle_id, launch).await })
+    }
+
+    /// One heartbeat round trip; the interval proves a device (network or tvOS included) is reachable.
+    pub fn heartbeat(&self, udid: String) -> impl Future<Output = Result<u64>> + use<> {
+        let inner = self.inner.clone();
+
+        self.run(async move { devices::heartbeat(&inner, &udid).await })
+    }
+
+    /// Forward device notifications as job log events until the job is cancelled.
+    pub fn notifications(&self, udid: String, names: Vec<String>) -> JobHandle<()> {
+        let inner = self.inner.clone();
+
+        self.job(move |context| async move { devices::notifications(&inner, &context, &udid, names).await })
     }
 
     // --------------------------------------------------------------------------------------------

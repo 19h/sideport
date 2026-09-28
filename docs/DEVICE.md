@@ -115,6 +115,63 @@ is named after the app); Sideport uses `CFBundleExecutable`. Its token is a rand
 with the installation; Sideport derives it from the bundle ID. Launching the installed app has
 not been verified; it needs an Apple-issued development identity whose profile lists the Mac.
 
+## Device utilities
+
+These run behind the `Backend` trait so a fake device exercises them without hardware
+(`crates/sl-testkit/src/device.rs`). Sources: reconstruction §8.1/§12, `notes/MOBDEV_NOTES.md`,
+`decompiled/go/sideloadly_mobdev.c` and `daemon_main.c`.
+
+- **Developer Disk Images** (`sl_device::ddi`, `mounter`, `tss`). `Catalog` resolves an image for
+  the device's `ProductVersion` from the recovered GitHub mirrors: the `releases/tags/<version>`
+  asset of `xushuduo/Xcode-iOS-Developer-Disk-Image` and `mspvirajpatel/Xcode_Developer_Disk_Images`
+  (extracting the `.dmg` and `.dmg.signature` from the zip, ignoring `__MACOSX`), else
+  `pdso/DeveloperDiskImage/master/<version>/DeveloperDiskImage.dmg` (+ `.signature`) directly.
+  Version selection tries the exact version then `major.minor` (recovered `getImageForVersion`).
+  `Store` caches into `<data dir>/developer-disk-images/devimg-<major.minor>.dmg` (+ `.signature`).
+  `IsMounted` is a `LookupImage` for `Developer` then `Personalized`; an already-mounted image
+  short-circuits. Legacy mount uploads `Developer` and mounts it with the signature.
+  **Personalized DDI (iOS 17+)**: the image, `Image.dmg.trustcache` and `BuildManifest.plist` come
+  from `doronz88/DeveloperDiskImage`; the signature is the device's own personalization manifest
+  when it has one, else a TSS ticket. `TssClient` POSTs to `http://gs.apple.com/TSS/controller?action=2`
+  (endpoint configurable) with the recovered request — `@HostPlatformInfo`/`@VersionInfo`
+  (`libauthinstall-973.0.1`)/`@UUID`/`@ApImg4Ticket`/`@BBTicket`, `ApBoardID`/`ApChipID`/`ApECID`
+  from `QueryPersonalizationIdentifiers`, `ApNonce` from `QueryNonce`, a 20-byte zero `SepNonce`,
+  the production/security flags the device reports, and the build-manifest components with their
+  `LoadableTrustCache` `RestoreRequestRules` applied — then parses `STATUS=0&…&REQUEST_STRING=` and
+  extracts `ApImg4Ticket`. `idevice`'s `select_build_identity`/`apply_restore_request_rules`/
+  `extract_img4_ticket` do the manifest math. All downloads are cancellable; endpoints are
+  configurable through `EngineConfig::ddi` so tests use wiremock and never contact GitHub or Apple.
+- **JIT** (`sl_device::jit`, "Enable JIT for Apps"). `Engine::enable_jit` mounts the developer
+  image, reads the app's bundle path/container/`CFBundleExecutable` from the installation proxy,
+  and drives debugserver over the recovered lockdown path (`com.apple.debugserver.DVTSecureSocketProxy`
+  then `com.apple.debugserver`). Launch sends `QSetLogging`, `QSetMaxPacketSize:1024`,
+  `QSetWorkingDir:<container>`, the `A` set-argv packet with the bundle path, `qLaunchSuccess`;
+  attach sends `vAttachOrWait;<hex exe>`; both end with `D` (detach) so the app keeps running with
+  debugging (and thus JIT) enabled, exactly as recovered `StartJIT`.
+- **Pairing repair** (`Engine::repair_pairing`). Unpairs (lockdown `Unpair` + usbmuxd
+  `DeletePairRecord`), then pairs again with the trust dialog, emitting typed progress the GUI can
+  drive (recovered `RepairPairing`).
+- **Heartbeat and notifications**. `Engine::heartbeat` runs one `Marco`/`Polo`; the interval proves
+  a network or tvOS device is reachable. `Engine::notifications` forwards `notification_proxy`
+  events (default `com.apple.mobile.application_(un)installed`) as job log events until cancelled.
+- **Wi-Fi devices** already surface in the device list with their connection kind (`Connection::Network`).
+
+CLI: `device mount-ddi UDID`, `device jit UDID BUNDLE_ID [--attach]`, `device repair-pairing UDID`,
+`device heartbeat UDID`, `device notifications UDID [--name NAME]`.
+
+Deliberate deviations:
+
+- The personalized TSS request copies the device's `Ap,*` identity tags (as `idevice` does); the
+  recovered client parses only the typed identifier fields, discarding `Ap,*`. It also uses the
+  production/security flags the device reports (recovered `CertificateProductionStatus`/
+  `CertificateSecurityMode`) rather than hard-coding them.
+- JIT is the pre-iOS-17 lockdown debugserver path only, matching the recovered client. iOS 17+
+  moves debugserver behind the RSD/CoreDevice tunnel, which needs a root network tunnel; the
+  recovered client has no such path, so it is unimplemented.
+- **tvOS PIN pairing** (recovered `PairTV`, lockdown `cu_pairing`/`pair_cu` with an SRP PIN
+  exchange) is **not** implemented: `idevice` 0.1.68 exposes no CU-pairing API. It remains open.
+- A `QSetWorkingDir` error is ignored and JIT continues (recovered code ignores error code 60).
+
 ## Verification
 
 Eleven fault-injection tests run the policy against a fake device: clean install order and
@@ -136,6 +193,19 @@ into an application the user renamed, places a one-off install by name, and refu
 signing. The CLI lists this Mac by its computer name through the real system query. Store tests cover schema migration from version
 1 and refresh claims, including takeover of a stale claim.
 
+Seven `sl-device` DDI tests cover the catalog and mount flow against wiremock and a fake image
+mounter: a legacy image downloads from the raw mirror and is served from the cache afterwards;
+resolution falls back from `16.5.1` to `16.5`; a legacy mount uploads the `Developer` image when
+none is mounted; an already-mounted image short-circuits; a personalized mount uses the device's
+own manifest without contacting TSS; a personalized mount fetches a TSS ticket (via a wiremock
+`STATUS=0&…&REQUEST_STRING=` response) when the device has none, in the recovered call order; a
+cancelled download stops. Ten `sl-device` unit tests add the TSS request build (recovered tags and
+`RestoreRequestRules` application), response parsing, version selection, zip extraction and the JIT
+hex-encoding/response handling. Three engine tests use the fake device layer: mounting a legacy
+image downloads through wiremock and uploads it; enabling JIT (with an image already mounted)
+produces the exact recovered debugserver command sequence; and repairing pairing unpairs then
+pairs again with typed progress.
+
 On 2026-09-28 an ignored read-only probe (`cargo test -p sl-device --test probe -- --ignored`)
 listed one USB device through the system usbmuxd, opened a paired lockdown session and read
 `ProductType iPhone17,2`, `ProductVersion 27.2`, device class and name, and opened AFC and
@@ -146,6 +216,12 @@ two installed profiles (counts only recorded). A signer histogram showed App Sto
 developer signer and `ProfileValidated = true`; `is_developer_app` therefore means "not signed by
 the App Store signer" (2 of 146). These probes wrote nothing. No application was installed on a
 physical device.
+
+On a later date the read-only probe additionally connected the image mounter and queried whether a
+developer image was mounted: on an `iPhone17,x`/iOS 27.x device the mounter answered reachable with
+no developer image mounted (shape only recorded; the query uploads and mounts nothing). No image was
+mounted, no debugserver launched, no pairing changed on the physical device — those need explicit
+permission that was not given.
 
 ## Assumptions
 
@@ -164,8 +240,13 @@ physical device.
 
 - High impact: fixtures establish the installation contract, not acceptance by installd;
   physical installation with an authorized development identity is required.
-- Medium impact: Wi-Fi devices depend on usbmuxd's network support; tvOS pairing with a PIN
-  (recovered `PairTV`) and the heartbeat service are not implemented.
+- Medium impact: Developer Disk Image mounting, JIT and pairing repair are established by
+  fixtures against a fake image mounter/debugserver, not by mounting or launching on a real
+  device; personalized DDI depends on Apple's live TSS controller (never contacted in tests).
+- Medium impact: Wi-Fi devices depend on usbmuxd's network support; the heartbeat and
+  notification services are implemented but verified only against the fake device. tvOS PIN
+  pairing (recovered `PairTV`, lockdown CU pairing) is not implemented — `idevice` 0.1.68 has no
+  CU-pairing API — and remains open.
 - Medium impact: unattended refreshes cannot answer prompts; accounts with remembered passwords
   and reusable certificates refresh without interaction.
 - Low impact: the recovered `-wifi` UDID suffix is represented by `prefer_network`.

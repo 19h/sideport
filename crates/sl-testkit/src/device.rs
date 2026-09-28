@@ -9,6 +9,8 @@ use futures::StreamExt;
 use futures::future::BoxFuture;
 use parking_lot::{Mutex, MutexGuard};
 use sl_device::install::{InstallStatus, Session, Staging};
+use sl_device::jit::{AppLaunch, Debugger};
+use sl_device::mounter::{ImageMounting, Mounted};
 use sl_device::{
     Attached, Backend, Connector, DeviceError, DeviceValues, EventStream, InstalledApp, LineStream, Link, Result,
 };
@@ -38,6 +40,24 @@ pub struct DeviceState {
     /// Interrupt the next upload after this many bytes (the partial data stays staged).
     pub interrupt_after: Option<usize>,
     pub connections: usize,
+    /// A developer image already mounted, if any.
+    pub mounted: Option<Mounted>,
+    /// Each `(image_type, image, trust_cache)` the mounter was asked to mount.
+    pub mounts: Vec<(String, Vec<u8>, Option<Vec<u8>>)>,
+    /// A personalization manifest the device already holds (skips TSS when set).
+    pub device_manifest: Option<Vec<u8>>,
+    /// Personalization identifiers returned by the image mounter.
+    pub personalization: plist::Dictionary,
+    pub nonce: Vec<u8>,
+    /// The debugserver commands sent for JIT, in order.
+    pub jit_commands: Vec<String>,
+    /// App launch info keyed by bundle id, for JIT.
+    pub launch: BTreeMap<String, AppLaunch>,
+    /// Notifications served by the notification proxy; the stream then stays open.
+    pub notifications: Vec<String>,
+    /// Heartbeat interval, or `None` to make the heartbeat fail.
+    pub heartbeat: Option<u64>,
+    pub unpaired: bool,
     open: Option<String>,
     written: usize,
 }
@@ -194,6 +214,159 @@ impl Backend for FakeDevice {
             self.state.lock().paired = true;
 
             Ok(())
+        }
+        .boxed()
+    }
+
+    fn unpair<'a>(&'a self, udid: &'a str) -> BoxFuture<'a, Result<()>> {
+        async move {
+            self.check(udid)?;
+
+            let mut state = self.state.lock();
+            state.paired = false;
+            state.unpaired = true;
+
+            Ok(())
+        }
+        .boxed()
+    }
+
+    fn image_mounter<'a>(&'a self, udid: &'a str) -> BoxFuture<'a, Result<Box<dyn ImageMounting>>> {
+        async move {
+            self.check(udid)?;
+
+            let mounter: Box<dyn ImageMounting> = Box::new(FakeMounter { device: self.clone() });
+
+            Ok(mounter)
+        }
+        .boxed()
+    }
+
+    fn debugserver<'a>(&'a self, udid: &'a str) -> BoxFuture<'a, Result<Box<dyn Debugger>>> {
+        async move {
+            self.check(udid)?;
+
+            let debugger: Box<dyn Debugger> = Box::new(FakeDebugger { device: self.clone() });
+
+            Ok(debugger)
+        }
+        .boxed()
+    }
+
+    fn app_launch<'a>(&'a self, udid: &'a str, bundle_id: &'a str) -> BoxFuture<'a, Result<AppLaunch>> {
+        async move {
+            self.check(udid)?;
+
+            self.state
+                .lock()
+                .launch
+                .get(bundle_id)
+                .cloned()
+                .ok_or_else(|| DeviceError::Protocol(format!("app {bundle_id} is not installed")))
+        }
+        .boxed()
+    }
+
+    fn heartbeat<'a>(&'a self, udid: &'a str) -> BoxFuture<'a, Result<u64>> {
+        async move {
+            self.check(udid)?;
+
+            self.state.lock().heartbeat.ok_or_else(|| DeviceError::Interrupted("no heartbeat".into()))
+        }
+        .boxed()
+    }
+
+    fn observe<'a>(&'a self, udid: &'a str, _names: &'a [String]) -> BoxFuture<'a, Result<LineStream>> {
+        async move {
+            self.check(udid)?;
+
+            let lines = self.state.lock().notifications.clone();
+            let stream = futures::stream::iter(lines.into_iter().map(Ok)).chain(futures::stream::pending());
+
+            Ok(Box::pin(stream) as LineStream)
+        }
+        .boxed()
+    }
+}
+
+/// A fake image mounter that records mount requests and reports mounted state afterwards.
+struct FakeMounter {
+    device: FakeDevice,
+}
+
+impl ImageMounting for FakeMounter {
+    fn mounted(&mut self) -> BoxFuture<'_, Result<Option<Mounted>>> {
+        let mounted = self.device.state.lock().mounted;
+
+        async move { Ok(mounted) }.boxed()
+    }
+
+    fn mount<'a>(
+        &'a mut self,
+        image_type: &'a str,
+        image: &'a [u8],
+        _signature: Vec<u8>,
+        trust_cache: Option<Vec<u8>>,
+        _info: Option<plist::Value>,
+    ) -> BoxFuture<'a, Result<()>> {
+        async move {
+            let mut state = self.device.state.lock();
+            state.mounts.push((image_type.to_owned(), image.to_vec(), trust_cache));
+            state.mounted = Some(if image_type == sl_device::mounter::PERSONALIZED {
+                Mounted::Personalized
+            } else {
+                Mounted::Developer
+            });
+
+            Ok(())
+        }
+        .boxed()
+    }
+
+    fn device_manifest<'a>(&'a mut self, _image: &'a [u8]) -> BoxFuture<'a, Result<Option<Vec<u8>>>> {
+        let manifest = self.device.state.lock().device_manifest.clone();
+
+        async move { Ok(manifest) }.boxed()
+    }
+
+    fn personalization_identifiers(&mut self) -> BoxFuture<'_, Result<plist::Dictionary>> {
+        let identifiers = self.device.state.lock().personalization.clone();
+
+        async move { Ok(identifiers) }.boxed()
+    }
+
+    fn nonce(&mut self) -> BoxFuture<'_, Result<Vec<u8>>> {
+        let nonce = self.device.state.lock().nonce.clone();
+
+        async move { Ok(nonce) }.boxed()
+    }
+
+    fn reconnect(&mut self) -> BoxFuture<'_, Result<()>> {
+        async move { Ok(()) }.boxed()
+    }
+}
+
+/// A fake debugserver that records the JIT command sequence and answers `OK`.
+struct FakeDebugger {
+    device: FakeDevice,
+}
+
+impl Debugger for FakeDebugger {
+    fn command<'a>(&'a mut self, name: &'a str, argv: &'a [String]) -> BoxFuture<'a, Result<Option<String>>> {
+        async move {
+            let record = if argv.is_empty() { name.to_owned() } else { format!("{name} {}", argv.join(",")) };
+            self.device.state.lock().jit_commands.push(record);
+
+            Ok(Some("OK".into()))
+        }
+        .boxed()
+    }
+
+    fn set_argv<'a>(&'a mut self, argv: &'a [String]) -> BoxFuture<'a, Result<String>> {
+        async move {
+            self.device.state.lock().jit_commands.push(format!("A {}", argv.join(",")));
+
+            Ok("OK".into())
         }
         .boxed()
     }

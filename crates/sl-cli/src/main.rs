@@ -274,6 +274,33 @@ enum DeviceCommand {
     Pair {
         udid: String,
     },
+    /// Unpair, then pair again (repairs a broken "Trust This Computer" state).
+    RepairPairing {
+        udid: String,
+    },
+    /// Download and mount the Developer Disk Image matching the device's iOS version.
+    MountDdi {
+        udid: String,
+    },
+    /// Enable JIT for an installed bundle (mounts the developer image, then launches it).
+    Jit {
+        udid: String,
+        bundle_id: String,
+        /// Attach to the running app instead of launching it.
+        #[arg(long)]
+        attach: bool,
+    },
+    /// One heartbeat round trip; prints the interval if the device is reachable.
+    Heartbeat {
+        udid: String,
+    },
+    /// Print device notifications until interrupted.
+    Notifications {
+        udid: String,
+        /// Notification names to observe (default: app install/uninstall).
+        #[arg(long = "name")]
+        names: Vec<String>,
+    },
     /// Print the device log until interrupted.
     Syslog {
         udid: String,

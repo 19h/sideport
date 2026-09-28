@@ -504,6 +504,69 @@ fn device(engine: &Engine, command: DeviceCommand, json: bool) -> Result<()> {
 
             print(&serde_json::json!({ "paired": udid }), json, |_| println!("Paired {udid}"))
         }
+
+        DeviceCommand::RepairPairing { udid } => {
+            jobs::run(engine.repair_pairing(udid.clone()), &Answers::default())?;
+
+            print(&serde_json::json!({ "repaired": udid }), json, |_| println!("Pairing repaired for {udid}"))
+        }
+
+        DeviceCommand::MountDdi { udid } => {
+            let mount = jobs::run(engine.mount_developer_image(udid), &Answers::default())?;
+
+            print(
+                &serde_json::json!({ "already_mounted": mount.already_mounted, "personalized": mount.personalized }),
+                json,
+                |mount| {
+                    if mount["already_mounted"].as_bool() == Some(true) {
+                        println!("A developer image is already mounted");
+                    } else {
+                        println!("Developer image mounted");
+                    }
+                },
+            )
+        }
+
+        DeviceCommand::Jit { udid, bundle_id, attach } => {
+            jobs::run(engine.enable_jit(udid, bundle_id.clone(), !attach), &Answers::default())?;
+
+            print(&serde_json::json!({ "jit": bundle_id }), json, |_| println!("JIT enabled for {bundle_id}"))
+        }
+
+        DeviceCommand::Heartbeat { udid } => {
+            let interval = block_on(engine.heartbeat(udid))?;
+
+            print(&serde_json::json!({ "interval": interval }), json, |_| {
+                println!("Device is reachable (heartbeat interval {interval}s)")
+            })
+        }
+
+        DeviceCommand::Notifications { udid, names } => {
+            let names = if names.is_empty() {
+                vec![
+                    "com.apple.mobile.application_installed".to_string(),
+                    "com.apple.mobile.application_uninstalled".to_string(),
+                ]
+            } else {
+                names
+            };
+
+            let job = engine.notifications(udid, names);
+            let events = job.events();
+            let cancellation = job.cancellation_token();
+
+            ctrlc::set_handler(move || cancellation.cancel()).context("register interrupt handler")?;
+
+            while let Ok(event) = block_on(events.recv()) {
+                if let sl_engine::JobEvent::Log { message, .. } = event {
+                    println!("{message}");
+                }
+            }
+
+            block_on(job.result())?;
+
+            Ok(())
+        }
     }
 }
 
